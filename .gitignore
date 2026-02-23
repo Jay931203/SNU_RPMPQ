@@ -1,0 +1,37 @@
+# ===== Data files =====
+*.mat
+*.h5
+*.hdf5
+
+# ===== Model weights / checkpoints =====
+*.pth
+*.pth.tar
+*.pt
+*.onnx
+**/variables/
+*.pb
+*.mlx
+**/tensorflow/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# ===== Large result/cache files =====
+*.npz
+fitting_raw_data_mamba.csv
+
+# ===== Google Drive artifacts =====
+*.gsheet
+NVIDIA Corporation/
+
+# ===== IDE =====
+.vscode/
+.idea/
+
+# ===== OS =====
+Thumbs.db
+.DS_Store
