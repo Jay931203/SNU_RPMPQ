@@ -2,7 +2,10 @@ import time
 import os
 import torch
 from collections import namedtuple
-from tensorboardX import SummaryWriter
+try:
+    from tensorboardX import SummaryWriter
+except ImportError:
+    SummaryWriter = None
 from utils import logger
 from utils.statics import AverageMeter, evaluator
 
@@ -11,9 +14,16 @@ __all__ = ['Trainer', 'Tester']
 
 field = ('nmse', 'rho', 'epoch')
 Result = namedtuple('Result', field, defaults=(None,) * len(field))
-vision_test = SummaryWriter(log_dir="data_vision/test")
-vision_best = SummaryWriter(log_dir="data_vision/best")
-vision_every = SummaryWriter(log_dir="data_vision/every")
+
+# Lazy init: only create writers when actually training
+vision_test = vision_best = vision_every = None
+
+def _get_writers():
+    global vision_test, vision_best, vision_every
+    if vision_test is None and SummaryWriter is not None:
+        vision_test = SummaryWriter(log_dir="data_vision/test")
+        vision_best = SummaryWriter(log_dir="data_vision/best")
+        vision_every = SummaryWriter(log_dir="data_vision/every")
 
 class Trainer:
     r""" The training pipeline for encoder-decoder architecture
@@ -71,10 +81,12 @@ class Trainer:
 
             if ep % self.test_freq == 0:
                 self.test_loss, rho, nmse = self.test(test_loader)
-                vision_test.add_scalar("test loss", self.test_loss, global_step=ep)
-                vision_test.add_scalar("test rho", rho, global_step=ep)
-                vision_test.add_scalar("test nmse", nmse, global_step=ep)
-                vision_test.add_scalar("train loss", self.train_loss, global_step=ep)
+                _get_writers()
+                if vision_test is not None:
+                    vision_test.add_scalar("test loss", self.test_loss, global_step=ep)
+                    vision_test.add_scalar("test rho", rho, global_step=ep)
+                    vision_test.add_scalar("test nmse", nmse, global_step=ep)
+                    vision_test.add_scalar("train loss", self.train_loss, global_step=ep)
             else:
                 rho, nmse = None, None
 
@@ -143,8 +155,10 @@ class Trainer:
                             f'lr: {self.scheduler.get_lr()[0]:.2e} | '
                             f'MSE loss: {iter_loss.avg:.3e} | '
                             f'time: {iter_time.avg:.3f}')
-                vision_every.add_scalar(" lr ",self.scheduler.get_lr()[0],global_step=self.cur_epoch)
-                vision_every.add_scalar(" MSE loss",iter_loss.avg , self.cur_epoch)
+                _get_writers()
+                if vision_every is not None:
+                    vision_every.add_scalar(" lr ",self.scheduler.get_lr()[0],global_step=self.cur_epoch)
+                    vision_every.add_scalar(" MSE loss",iter_loss.avg , self.cur_epoch)
 
         mode = 'Train' if self.model.training else 'Val'
         logger.info(f'=> {mode}  Loss: {iter_loss.avg:.3e}\n')
@@ -157,7 +171,11 @@ class Trainer:
             return
 
         os.makedirs(self.save_path, exist_ok=True)
-        torch.save(state, os.path.join(self.save_path, name))
+        save_file = os.path.join(self.save_path, name)
+        try:
+            torch.save(state, save_file)
+        except OSError as e:
+            logger.warning(f'Failed to save {save_file}: {e} (disk full?)')
 
     def _resume(self):
         r""" protected function which resume from checkpoint at the beginning of training.
@@ -167,7 +185,7 @@ class Trainer:
             return None
         assert os.path.isfile(self.resume_file)
         logger.info(f'=> loading checkpoint {self.resume_file}')
-        checkpoint = torch.load(self.resume_file)
+        checkpoint = torch.load(self.resume_file, map_location='cpu', weights_only=False)
         self.cur_epoch = checkpoint['epoch']
         self.model.load_state_dict(checkpoint['state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
@@ -214,8 +232,10 @@ class Trainer:
                   f'\n   Best NMSE: {self.best_nmse.nmse:.3e} ('
                   f'Corresponding rho={self.best_nmse.rho:.3e};  '
                   f'epoch={self.best_nmse.epoch})\n')
-            vision_best.add_scalar(" best rho ",self.best_rho.rho, global_step=self.best_rho.epoch)
-            vision_best.add_scalar(" best MSE ", self.best_nmse.nmse, global_step=self.best_nmse.epoch)
+            _get_writers()
+            if vision_best is not None:
+                vision_best.add_scalar(" best rho ",self.best_rho.rho, global_step=self.best_rho.epoch)
+                vision_best.add_scalar(" best MSE ", self.best_nmse.nmse, global_step=self.best_nmse.epoch)
 
 
 

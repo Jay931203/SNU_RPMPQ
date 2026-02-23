@@ -1,5 +1,6 @@
-# 파일 이름: MambaAE.py
-# (최종 수정: use_chunking 플래그 및 Full Activation Quantization 통합)
+# MambaAE.py
+# Asymmetric CSI Feedback Autoencoder (Section III)
+# UE-side SSM encoder f_theta + BS-side decoder g_phi
 
 import os, sys
 import torch
@@ -10,6 +11,7 @@ from functools import partial, lru_cache
 from einops import repeat, rearrange
 
 # --- [Import Check] ---
+# VMamba SS2D CUDA kernel and mamba-ssm for 1D SSM operations
 try:
     from models.VSS_module import SS2D as VSSBlock
 except ImportError:
@@ -29,10 +31,10 @@ except ImportError:
     HilbertCurve = None
 
 
-# --- [Quantizer Implementation] ---
+# --- [Quantization: Feedback & Activation (Section II-B)] ---
 
 class UniformQuantizer_0_1(torch.autograd.Function):
-    """Bottleneck(z)용 0~1 범위 양자화기"""
+    """Latent feedback quantization Q_fb (Eq.6): [0,1] uniform"""
     @staticmethod
     def forward(ctx, x, bits=8):
         n_levels = 2 ** bits
@@ -46,10 +48,7 @@ class UniformQuantizer_0_1(torch.autograd.Function):
     def backward(ctx, grad_output): return grad_output, None
 
 class DynamicActivationQuantizer(nn.Module):
-    """
-    Activation 및 Input용 동적 양자화기 (Asymmetric)
-    Min-Max 범위를 배치/채널별로 계산하여 양자화 수행
-    """
+    """Dynamic activation quantizer for UE-side inference (asymmetric min-max)"""
     def __init__(self, bits=32):
         super().__init__()
         self.bits = bits
@@ -58,23 +57,18 @@ class DynamicActivationQuantizer(nn.Module):
     def forward(self, x):
         if not self.active: return x
         
-        # Min/Max 계산
         min_val = x.min()
         max_val = x.max()
-        
-        # 범위가 0이면 패스
         if max_val == min_val: return x
 
-        # Scale & Zero-point 계산 (Asymmetric)
+        # Asymmetric scale & zero-point
         q_max = (2 ** self.bits) - 1
         scale = (max_val - min_val) / q_max
         zero_point = torch.round(-min_val / scale)
         
-        # Quantize (Fake Quantization)
+        # Fake quantization with STE (Straight-Through Estimator)
         x_q = torch.clamp(torch.round(x / scale + zero_point), 0, q_max)
         x_deq = (x_q - zero_point) * scale
-        
-        # STE (Gradient Pass-through)
         return (x_deq - x).detach() + x
 
 
@@ -158,7 +152,7 @@ class ChunkedResidualMambaBlock(nn.Module):
         self.use_chunking = use_chunking
         self.norm = StateNorm(d_model)
         self.act = nn.SiLU()
-        self.act_quant = DynamicActivationQuantizer(act_bits) # ✅ Activation Quantizer
+        self.act_quant = DynamicActivationQuantizer(act_bits)
         
         self.vss = nn.Sequential(
             PermuteBCHWtoBHWC(),
@@ -174,13 +168,12 @@ class ChunkedResidualMambaBlock(nn.Module):
         cs = self.chunk_size
         x_norm = self.norm(x)
         
-        # Act -> Quantize
         x_act = self.act(x_norm)
-        x_act = self.act_quant(x_act) 
-        
+        x_act = self.act_quant(x_act)
+
         if self.use_beam_mask and self.beam_mask_module:
             x_act = x_act * self.beam_mask_module(x_act)
-            x_act = self.act_quant(x_act) # Mask 적용 후 재양자화 (Option)
+            x_act = self.act_quant(x_act)
 
         # Global Scan Logic
         if not self.use_chunking:
@@ -202,7 +195,7 @@ class HilbertResidualMambaBlock(nn.Module):
         if Mamba1D is None: raise ImportError("Requires mamba_ssm")
         self.chunk_size = chunk_size
         self.norm = StateNorm(d_model); self.act = nn.SiLU()
-        self.act_quant = DynamicActivationQuantizer(act_bits) # ✅
+        self.act_quant = DynamicActivationQuantizer(act_bits)
         
         self.mamba_fwd = Mamba1D(d_model=d_model, d_state=16, d_conv=4, expand=2)
         self.mamba_bwd = Mamba1D(d_model=d_model, d_state=16, d_conv=4, expand=2)
@@ -214,7 +207,7 @@ class HilbertResidualMambaBlock(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape; cs = self.chunk_size
         x_norm = self.norm(x)
-        x_act = self.act_quant(self.act(x_norm)) # Act & Quant
+        x_act = self.act_quant(self.act(x_norm))
         
         if self.use_beam_mask and self.beam_mask_module: 
             x_act = self.act_quant(x_act * self.beam_mask_module(x_act))
@@ -239,7 +232,7 @@ class RasterResidualMambaBlock(nn.Module):
         super().__init__()
         if Mamba1D is None: raise ImportError("Requires mamba_ssm")
         self.chunk_size = chunk_size; self.norm = StateNorm(d_model); self.act = nn.SiLU()
-        self.act_quant = DynamicActivationQuantizer(act_bits) # ✅
+        self.act_quant = DynamicActivationQuantizer(act_bits)
         
         self.mamba_fwd = Mamba1D(d_model=d_model, d_state=16, d_conv=4, expand=2)
         self.mamba_bwd = Mamba1D(d_model=d_model, d_state=16, d_conv=4, expand=2)
@@ -268,7 +261,7 @@ class BiaxialResidualMambaBlock(nn.Module):
         super().__init__()
         if Mamba1D is None: raise ImportError("Requires mamba_ssm")
         self.chunk_size = chunk_size; self.norm = StateNorm(d_model); self.act = nn.SiLU()
-        self.act_quant = DynamicActivationQuantizer(act_bits) # ✅
+        self.act_quant = DynamicActivationQuantizer(act_bits)
         
         self.row_fwd = Mamba1D(d_model, d_state=16, d_conv=4, expand=2)
         self.row_bwd = Mamba1D(d_model, d_state=16, d_conv=4, expand=2)
@@ -302,7 +295,7 @@ class UniaxialHResidualMambaBlock(nn.Module):
         super().__init__()
         if Mamba1D is None: raise ImportError("Requires mamba_ssm")
         self.chunk_size = chunk_size; self.norm = StateNorm(d_model); self.act = nn.SiLU()
-        self.act_quant = DynamicActivationQuantizer(act_bits) # ✅
+        self.act_quant = DynamicActivationQuantizer(act_bits)
 
         self.col_fwd = Mamba1D(d_model, d_state=16, d_conv=4, expand=2)
         self.col_bwd = Mamba1D(d_model, d_state=16, d_conv=4, expand=2)
@@ -327,7 +320,7 @@ class UniaxialHResidualMambaBlock(nn.Module):
         return x + self.alpha * x_vss
 
 
-# --- [MambaAE Main Class] ---
+# --- [Asymmetric CSI Feedback Autoencoder (Section III)] ---
 
 class MambaAE(nn.Module):
     def __init__(self, depths=[2, 2, 4, 2], drop_path_rate=0.1, N=128, M=32, bits=8,
@@ -335,8 +328,8 @@ class MambaAE(nn.Module):
                  scan_mode="chunked_ss2d",
                  use_beam_mask=False,
                  compression_mode="default",
-                 use_chunking=True,    # ✅ Chunking Flag
-                 act_quant_bits=32,    # ✅ Activation Quantization Bits
+                 use_chunking=True,
+                 act_quant_bits=32,
                  **kwargs):
         super().__init__()
 
@@ -350,10 +343,9 @@ class MambaAE(nn.Module):
         self.use_chunking = use_chunking
         self.act_quant_bits = act_quant_bits 
         
-        # ✅ Input Quantizer
         self.input_quant = DynamicActivationQuantizer(act_quant_bits)
 
-        print(f"--- MambaAE Initialized. Scan: {self.scan_mode}, Mask: {self.use_beam_mask}, Comp: {self.compression_mode}, Chunking: {self.use_chunking}, ActQuant: {self.act_quant_bits}-bit ---")
+        print(f"[INFO] Asymmetric CSI AE Initialized (UE: SSM Encoder, BS: Decoder) | Scan: {self.scan_mode}, Mask: {self.use_beam_mask}, Comp: {self.compression_mode}, Chunking: {self.use_chunking}, ActQuant: {self.act_quant_bits}-bit")
 
         if "ss2d" in scan_mode and VSSBlock is None: raise ImportError("SS2D missing")
         if ("hilbert" in scan_mode or "biaxial" in scan_mode or "raster" in scan_mode) and Mamba1D is None:
@@ -368,13 +360,13 @@ class MambaAE(nn.Module):
 
         if self.compression_mode == "hybrid":
             s1, s2, s3 = (2, 4), (2,2), (2, 1)
-            k1 = (5, 5) 
-            print(f"👉 Hybrid Strides: {s1}(K{k1}) -> {s2} -> {s3}")
+            k1 = (5, 5)
+            print(f"[INFO] Hybrid Strides: {s1}(K{k1}) -> {s2} -> {s3}")
         else:
             s1, s2, s3 = 2, 2, 2
             k1 = 5
         
-        # --- Encoder ---
+        # --- UE Encoder f_theta (SSM-based, Section III-D) ---
         self.g_a_conv1 = conv(2, N, kernel_size=k1, stride=s1)
         self.g_a_stage1 = self.make_stage(self.depths_enc[0], N, dpr, dpr_idx, self.chunk_sizes[0])
         dpr_idx += self.depths_enc[0]
@@ -387,7 +379,7 @@ class MambaAE(nn.Module):
         self.g_a_stage3 = self.make_stage(self.depths_enc[2], M, dpr, dpr_idx, self.chunk_sizes[2])
         dpr_idx += self.depths_enc[2]
 
-        # --- Decoder ---
+        # --- BS Decoder g_phi (Section III-E) ---
         self.g_s_stage3 = self.make_stage(self.depths_dec[2], M, dpr, dpr_idx, self.chunk_sizes[2])
         dpr_idx += self.depths_dec[2]
         self.g_s_deconv3 = deconv(M, N, kernel_size=3, stride=s3)
@@ -410,8 +402,8 @@ class MambaAE(nn.Module):
             kwargs = {
                 "d_model": d_model, "dpr": dpr_val, 
                 "chunk_size": chunk_size, "use_beam_mask": self.use_beam_mask,
-                "use_chunking": self.use_chunking, # ✅
-                "act_bits": self.act_quant_bits      # ✅
+                "use_chunking": self.use_chunking,
+                "act_bits": self.act_quant_bits
             }
             if self.scan_mode == "chunked_hilbert": blocks.append(HilbertResidualMambaBlock(**kwargs))
             elif self.scan_mode == "chunked_biaxial": blocks.append(BiaxialResidualMambaBlock(**kwargs))
@@ -432,23 +424,23 @@ class MambaAE(nn.Module):
             nn.init.constant_(m.gamma, 1.0)
             nn.init.constant_(m.beta, 0.0)
 
-    def g_a(self, x):
-        # ✅ Input Quantization
+    def f_theta(self, x):
+        """UE encoder f_theta: X_a -> z (Eq.4)"""
         x = self.input_quant(x)
-        
         x = self.g_a_stage1(self.g_a_conv1(x))
         x = self.g_a_stage2(self.g_a_conv2(x))
         x = self.g_a_stage3(self.g_a_conv3(x))
         return self.latent_tanh(x)
 
-    def g_s(self, y_hat):
+    def g_phi(self, y_hat):
+        """BS decoder g_phi: z_hat -> X_hat (Eq.7)"""
         x = self.g_s_deconv3(self.g_s_stage3(y_hat))
         x = self.g_s_deconv2(self.g_s_stage2(x))
         x = self.g_s_deconv1(self.g_s_stage1(x))
         return self.final_sigmoid(x)
 
     def forward(self, x):
-        y_norm = (self.g_a(x) + 1) / 2
+        y_norm = (self.f_theta(x) + 1) / 2
         if self.bits < 1: y_hat = y_norm
         else:
             is_warmup = getattr(self, "disable_quant", False)
@@ -460,4 +452,4 @@ class MambaAE(nn.Module):
                 y_hat = y_norm + noise
             else:
                 y_hat = UniformQuantizer_0_1.apply(y_norm, self.bits)
-        return self.g_s(y_hat)
+        return self.g_phi(y_hat)

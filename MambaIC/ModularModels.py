@@ -18,31 +18,28 @@ Tensor = torch.Tensor
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-# ✅ 양자화 함수 (Straight-Through Estimator)
+# Weight/Activation quantization with STE (Section III-E)
 class QuantizationFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, bits):
-        # 입력의 Min/Max를 이용해 Scale 계산
         min_val, max_val = input.min(), input.max()
         step = (max_val - min_val) / (2 ** bits - 1)
-        if step == 0: return input # 값 변화가 없으면 그대로 반환
+        if step == 0: return input
 
-        # 양자화 (Round)
         input_clamped = torch.clamp(input, min_val, max_val)
         input_normalized = (input_clamped - min_val) / step
         input_rounded = torch.round(input_normalized)
-        
-        # 역양자화 (De-quantization)하여 값 복원 (Forward는 양자화된 값 사용)
+
         output = input_rounded * step + min_val
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        # 역전파 시에는 기울기를 그대로 통과 (STE)
+        # Straight-Through Estimator: pass gradient unchanged
         return grad_output, None
 
 def quantize_tensor(x, bits):
-    """텐서(Weight or Activation)를 지정된 비트로 양자화"""
+    """Quantize tensor (weight or activation) to given bit-width"""
     return QuantizationFunction.apply(x, bits)
 
 # =========================================================================
@@ -162,7 +159,7 @@ class MobileNetBlock(nn.Module):
     def forward(self, x): return x + self.conv(x) if self.use_res_connect else self.conv(x)
 
 # =========================================================================
-# [Part 4] Encoders
+# [Part 4] UE-Side Encoders
 # =========================================================================
 
 # 1. MobileNet Encoder (Standard)
@@ -191,12 +188,10 @@ class TransNetEncoder(nn.Module):
         self.fc_encoder = nn.Linear(2048, encoded_dim)
     def forward(self, x): src = x.view(-1, self.feature_shape[0], self.feature_shape[1]); memory = self.encoder(src); return self.fc_encoder(memory.view(memory.shape[0], -1))
 
-# 4. ✅ Mamba Encoder (양자화 지원 수정됨)
+# 4. Mamba UE Encoder (with quantization support)
 class MambaEncoder(nn.Module):
     def __init__(self, encoded_dim=512, M=32, num_layers=2, quant_act_bits=0, quant_param_bits=0):
         super(MambaEncoder, self).__init__()
-        
-        # Mamba Load
         try: from models.MambaAE import ChunkedResidualMambaBlock
         except ImportError:
             try: from MambaAE import ChunkedResidualMambaBlock
@@ -206,13 +201,12 @@ class MambaEncoder(nn.Module):
         self.H_proc = 16
         self.W_proc = 16
         
-        # 양자화 설정
         self.q_act_bits = quant_act_bits
         self.q_param_bits = quant_param_bits
-        
-        if self.q_act_bits > 0: print(f"🔹 [Mamba] Activation Quantization: {self.q_act_bits} bits")
-        if self.q_param_bits > 0: print(f"🔹 [Mamba] Parameter Quantization: {self.q_param_bits} bits")
-        
+
+        if self.q_act_bits > 0: print(f"[INFO] Mamba Activation Quantization: {self.q_act_bits} bits")
+        if self.q_param_bits > 0: print(f"[INFO] Mamba Parameter Quantization: {self.q_param_bits} bits")
+
         # 1. Stem
         self.stem = nn.Sequential(
             nn.Conv2d(2, M, kernel_size=3, stride=2, padding=1, bias=False),
@@ -230,7 +224,7 @@ class MambaEncoder(nn.Module):
         self.fc = nn.Linear(8 * self.H_proc * self.W_proc, encoded_dim)
 
     def _apply_weight_quant(self, x, layer):
-        """레이어 가중치를 즉석에서 양자화하여 연산 수행"""
+        """Apply on-the-fly weight quantization during forward pass"""
         if self.q_param_bits > 0 and hasattr(layer, 'weight'):
             w_q = quantize_tensor(layer.weight, self.q_param_bits)
             if isinstance(layer, nn.Conv2d):
@@ -241,7 +235,7 @@ class MambaEncoder(nn.Module):
             return layer(x)
 
     def forward(self, x):
-        # 1. Stem (Conv Parameter Quantization)
+        # 1. Stem
         if self.q_param_bits > 0:
             x = self._apply_weight_quant(x, self.stem[0]) # Conv
             x = self.stem[1](x) # BN
@@ -249,10 +243,10 @@ class MambaEncoder(nn.Module):
         else:
             x = self.stem(x)
 
-        # 2. Mamba Layers (내부 Weight는 그대로 사용)
+        # 2. Mamba Layers
         x = self.layers(x)
-        
-        # 3. Proj & FC (Parameter Quantization)
+
+        # 3. Proj & FC
         if self.q_param_bits > 0:
             x = self._apply_weight_quant(x, self.proj_conv)
             x = x.flatten(1)
@@ -262,15 +256,15 @@ class MambaEncoder(nn.Module):
             x = x.flatten(1)
             x = self.fc(x)
 
-        # 4. Activation Quantization (Latent Vector)
+        # 4. Activation Quantization (latent vector)
         if self.q_act_bits > 0:
-            x = torch.sigmoid(x)  # 0~1 범위로 매핑
+            x = torch.sigmoid(x)
             x = quantize_tensor(x, self.q_act_bits)
             
         return x
 
 # =========================================================================
-# [Part 5] Decoders
+# [Part 5] BS-Side Decoders
 # =========================================================================
 
 # 1. CsiNet Decoder
@@ -334,23 +328,22 @@ class MobileNetDecoder(nn.Module):
     def forward(self, z): x = self.fc_bridge(z).view(-1, 128, 4, 4); x = self.up1(x); x = self.up2(x); x = self.up3(x); return self.sigmoid(self.final_conv(x))
 
 # =========================================================================
-# [Part 6] Main Assembler
+# [Part 6] Asymmetric CSI Feedback Autoencoder Assembly
 # =========================================================================
 class ModularAE(nn.Module):
     def __init__(self, encoder_type="csinet", decoder_type="csinet", encoded_dim=512, M=32, decoder_layers=2, encoder_layers=2, quant_act_bits=0, quant_param_bits=0, **kwargs):
         super().__init__()
-        print(f"🏗️ Building: Enc[{encoder_type}-L{encoder_layers}] + Dec[{decoder_type}-L{decoder_layers}]")
-        
-        # [Encoder]
-        if encoder_type == "mamba": 
-            # Mamba는 내부에서 직접 처리
+        print(f"[INFO] Building: UE Encoder [{encoder_type}-L{encoder_layers}] + BS Decoder [{decoder_type}-L{decoder_layers}]")
+
+        # [UE Encoder]
+        if encoder_type == "mamba":
             self.encoder = MambaEncoder(encoded_dim, M=M, num_layers=encoder_layers, quant_act_bits=quant_act_bits, quant_param_bits=quant_param_bits)
         elif encoder_type == "csinet": self.encoder = CsiNetEncoder(encoded_dim)
         elif encoder_type == "transnet": self.encoder = TransNetEncoder(encoded_dim, d_model=64, num_layers=encoder_layers)
         elif encoder_type == "mobilenet": self.encoder = MobileNetEncoder(encoded_dim)
         else: raise ValueError(f"Unknown encoder: {encoder_type}")
             
-        # [Decoder]
+        # [BS Decoder]
         if decoder_type == "csinet": self.decoder = CsiNetDecoder(encoded_dim, num_layers=decoder_layers)
         elif decoder_type == "transnet": self.decoder = TransNetDecoder(encoded_dim, d_model=64, num_layers=decoder_layers)
         elif decoder_type == "mamba": self.decoder = MambaTransDecoder(encoded_dim, M=M, num_layers=decoder_layers)

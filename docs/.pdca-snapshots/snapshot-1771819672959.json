@@ -1,0 +1,1107 @@
+{
+  "timestamp": "2026-02-23T04:07:52.948Z",
+  "reason": "compaction",
+  "status": {
+    "version": "2.0",
+    "lastUpdated": "2026-02-23T04:07:39.435Z",
+    "activeFeatures": [
+      "MambaIC"
+    ],
+    "primaryFeature": "MambaIC",
+    "features": {
+      "MambaIC": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-02-23T03:44:13.834Z",
+          "lastUpdated": "2026-02-23T04:07:39.434Z"
+        },
+        "lastFile": "G:\\내 드라이브\\MambaCompression\\MambaIC\\train_ae.py"
+      }
+    },
+    "pipeline": {
+      "currentPhase": 1,
+      "level": "Dynamic",
+      "phaseHistory": []
+    },
+    "session": {
+      "startedAt": "2026-02-23T03:42:00.062Z",
+      "onboardingCompleted": false,
+      "lastActivity": "2026-02-23T04:07:39.435Z"
+    },
+    "history": [
+      {
+        "timestamp": "2026-02-23T03:44:13.834Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:44:21.487Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:44:30.719Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:44:39.235Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:44:47.456Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:44:56.375Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:45:04.398Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:45:12.377Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:45:22.218Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:45:30.039Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:45:37.530Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:45:47.407Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:45:56.580Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:46:04.301Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:46:12.220Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:46:19.666Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:46:32.492Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:46:42.180Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:46:50.272Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:47:23.360Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:47:30.950Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:47:39.509Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:47:48.543Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:47:56.759Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:48:04.012Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:48:11.462Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:48:19.253Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:48:26.325Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:48:38.120Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:48:44.984Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:49:07.753Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:49:18.940Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:49:28.583Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:49:37.138Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:49:43.812Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:49:51.104Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:49:58.609Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:50:08.308Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:50:15.670Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:50:24.181Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:50:31.914Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:50:39.943Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:50:47.793Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:50:54.926Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:51:03.598Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:51:51.637Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:09.330Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:13.789Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:19.680Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:27.266Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:31.660Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:39.789Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:47.369Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:52:56.490Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:53:02.542Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:53:12.342Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:53:19.740Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:53:24.948Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:53:33.782Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:53:38.284Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:06.478Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:11.110Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:16.056Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:23.531Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:28.796Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:33.939Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:41.638Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:46.917Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:54:51.408Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:55:03.772Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:55:25.642Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:55:34.768Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:55:39.202Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:55:52.387Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:55:56.854Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:02.437Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:11.613Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:16.974Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:22.212Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:33.483Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:39.205Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:48.980Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:56:53.961Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:03.691Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:09.830Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:18.126Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:23.242Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:30.300Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:38.109Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:46.521Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:57:53.424Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:02.654Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:07.903Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:14.370Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:24.936Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:33.671Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:38.708Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:47.172Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:58:54.311Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:03.174Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:07.708Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:12.781Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:20.877Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:25.944Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:30.933Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:45.944Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T03:59:55.076Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:00.109Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:05.121Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:14.029Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:19.338Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:24.757Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:30.312Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:41.700Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:49.292Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:00:53.765Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:01:01.361Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:01:12.532Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:01:17.977Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:01:31.101Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:01:45.200Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:01:54.947Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:05.796Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:10.870Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:17.735Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:22.730Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:29.709Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:35.041Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:39.844Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:45.120Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:02:50.400Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:08.493Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:16.396Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:24.150Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:29.525Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:38.507Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:43.718Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:50.099Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:03:55.021Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:00.943Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:05.909Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:11.050Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:17.276Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:22.976Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:30.160Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:35.218Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:41.060Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:46.937Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:53.469Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:04:58.423Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:03.991Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:09.801Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:15.191Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:20.838Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:31.401Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:36.593Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:43.096Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:51.503Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:05:56.935Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:03.028Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:07.979Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:12.559Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:18.080Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:24.852Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:30.789Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:36.220Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:41.217Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:45.826Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:51.245Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:06:56.995Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:01.852Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:08.487Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:13.640Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:18.923Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:24.447Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:29.351Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:34.653Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-02-23T04:07:39.434Z",
+        "feature": "MambaIC",
+        "phase": "do",
+        "action": "updated"
+      }
+    ]
+  }
+}

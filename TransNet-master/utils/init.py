@@ -47,7 +47,8 @@ def init_model(args):
     if args.pretrained is not None:
         assert os.path.isfile(args.pretrained)
         state_dict = torch.load(args.pretrained,
-                                map_location=torch.device('cpu'),weights_only=False)['state_dict']
+                                map_location=torch.device('cpu'),
+                                weights_only=False)['state_dict']
         model.load_state_dict(state_dict,strict=False)
         logger.info("pretrained model loaded from {}".format(args.pretrained))
 

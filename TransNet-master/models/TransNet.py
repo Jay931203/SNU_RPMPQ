@@ -374,6 +374,7 @@ class Transformer(nn.Module):
         self.batch_first = batch_first
         self.fc_encoder = nn.Linear(2048,2048//reduction)
         self.fc_decoder = nn.Linear(2048//reduction,2048)
+        self.predict = nn.Linear(d_model, d_model)
         self._reset_parameters()
         
 
@@ -388,6 +389,7 @@ class Transformer(nn.Module):
             output = self.decoder(memory_decoder, memory_decoder, tgt_mask=tgt_mask, memory_mask=memory_mask,
                                   tgt_key_padding_mask=tgt_key_padding_mask,
                                   memory_key_padding_mask=memory_key_padding_mask)
+            output = self.predict(output)
             output = output.view(-1,2,32,32)
             return output
 

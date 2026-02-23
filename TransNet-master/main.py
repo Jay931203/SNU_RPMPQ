@@ -4,8 +4,14 @@ from utils.parser import args
 from utils import logger, Trainer, Tester
 from utils import init_device, init_model, FakeLR, WarmUpCosineAnnealingLR
 from dataloader import Cost2100DataLoader
-from tensorboardX import SummaryWriter
-from torchviz import make_dot
+try:
+    from tensorboardX import SummaryWriter
+except ImportError:
+    SummaryWriter = None
+try:
+    from torchviz import make_dot
+except ImportError:
+    make_dot = None
 
 def main():
     logger.info('=> PyTorch Version: {}'.format(torch.__version__))
@@ -26,6 +32,11 @@ def main():
     model = init_model(args)
     model.to(device)
 
+    # torch.compile for faster training (PyTorch 2.0+, numerical results unchanged)
+    if hasattr(torch, 'compile') and not args.evaluate:
+        model = torch.compile(model)
+        logger.info('=> Model compiled with torch.compile')
+
     # Define loss function
     criterion = nn.MSELoss().to(device)
 
@@ -34,7 +45,7 @@ def main():
         # [수정된 로딩 로직]
         if args.pretrained:
             # 1. weights_only=False: 사용자 정의 클래스 에러 방지
-            checkpoint = torch.load(args.pretrained, map_location=device, weights_only=False)
+            checkpoint = torch.load(args.pretrained, map_location=device)
             # 2. strict=False: Total_ops 등 불필요한 키 에러 방지
             model.load_state_dict(checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint, strict=False)
             
@@ -55,13 +66,14 @@ def main():
                                             eta_min=5e-5)
 
     # Define the training pipeline
-    
+    save_path = f'./checkpoints/cr{args.cr}_{args.scenario}'
     trainer = Trainer(model=model,
                       device=device,
                       optimizer=optimizer,
                       criterion=criterion,
                       scheduler=scheduler,
-                      resume=args.resume)
+                      resume=args.resume,
+                      save_path=save_path)
 
     # Start training
     trainer.loop(args.epochs, train_loader, val_loader, test_loader)

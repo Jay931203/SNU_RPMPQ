@@ -18,15 +18,23 @@ import pandas as pd
 import seaborn as sns
 import glob
 import ast
-import pulp # ILP 최적화를 위한 라이브러리
+import pulp # ILP optimization library
 
-# ✅ TF32 Enable
+# TF32 Enable
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path: sys.path.append(project_root)
+
+# --- Output directories ---
+RESULTS_CSV  = os.path.join(project_root, "results", "csv")
+RESULTS_PLOT = os.path.join(project_root, "results", "plots")
+FIGURES_DIR  = os.path.join(project_root, "..", "figures")
+os.makedirs(RESULTS_CSV, exist_ok=True)
+os.makedirs(RESULTS_PLOT, exist_ok=True)
+os.makedirs(FIGURES_DIR, exist_ok=True)
 
 # --- Imports ---
 try:
@@ -44,125 +52,111 @@ import pandas as pd
 import torch.utils
 import re
 
-class RANCController:
-    def __init__(self, fitting_data_path, policy_lut_path, lambda_risk=1.0, num_bins=20):
+class RPMPQOnlineController:
+    """RP-MPQ online stage: per-sample policy selection (Section V)"""
+    def __init__(self, calibration_data_path, policy_lut_path, lambda_budget=1.0, num_bins=20):
         """
-        [Step 1] Offline Reliability Profiling
-        Raw 데이터를 Sparsity 구간(Bin)별로 나누어 평균(mu)과 표준편차(sigma) 테이블을 구축합니다.
+        [RP-MPQ Offline] Violation Cost LUT Construction (Section V-E)
+        Build per-bin (mu, sigma) table from calibration data.
         """
-        self.lambda_risk = lambda_risk
-        
-        # 1. 데이터 로드
-        if not os.path.exists(fitting_data_path):
-            raise FileNotFoundError(f"🚨 Fitting data not found: {fitting_data_path}")
-            
-        df = pd.read_csv(fitting_data_path)
+        self.lambda_budget = lambda_budget
+
+        if not os.path.exists(calibration_data_path):
+            raise FileNotFoundError(f"[ERROR] Calibration data not found: {calibration_data_path}")
+
+        df = pd.read_csv(calibration_data_path)
         self.lut_df = pd.read_csv(policy_lut_path)
-        
-        # Policy 파싱
+
         if isinstance(self.lut_df['Policy'].iloc[0], str):
             self.lut_df['Policy'] = self.lut_df['Policy'].apply(ast.literal_eval)
 
-        # 2. Config(k) 식별 (Saving 기준 오름차순 정렬)
+        # Identify policy IDs (sorted by saving ascending)
         df['Config_k'] = df['B'].round(4)
-        self.configs = sorted(df['Config_k'].unique()) 
-        
-        # 3. Binning & Profiling
-        self.s_grids = np.linspace(0.0, 1.0, num_bins + 1)
-        self.profile_table = {} 
+        self.policy_ids = sorted(df['Config_k'].unique())
 
-        print(f"   ⚙️ [RANC Init] Building Profile Table (Lambda={lambda_risk}, Bins={num_bins})...")
-        
-        for k in self.configs:
+        # Binning & profiling
+        self.s_grids = np.linspace(0.0, 1.0, num_bins + 1)
+        self.violation_cost_lut = {}
+
+        print(f"   [INFO] RP-MPQ Online Controller: Building Violation Cost LUT (lambda={lambda_budget}, Bins={num_bins})...")
+
+        for k in self.policy_ids:
             sub_df = df[df['Config_k'] == k]
-            # 각 샘플을 Bin에 할당
             sub_df = sub_df.copy()
             sub_df['Bin'] = pd.cut(sub_df['S'], bins=self.s_grids, labels=False, include_lowest=True)
-            
+
             stats = []
             for bin_idx in range(num_bins):
                 bin_data = sub_df[sub_df['Bin'] == bin_idx]
                 s_center = (self.s_grids[bin_idx] + self.s_grids[bin_idx+1]) / 2.0
-                
+
                 if len(bin_data) > 0:
                     mu = bin_data['NMSE_linear'].mean()
                     sigma = bin_data['NMSE_linear'].std() if len(bin_data) > 1 else 0.0
                 else:
-                    mu, sigma = np.nan, np.nan # 결측치는 보간으로 채움
-                
+                    mu, sigma = np.nan, np.nan
+
                 stats.append({'S': s_center, 'mu': mu, 'sigma': sigma})
-            
-            # 보간(Interpolation) 및 결측치 채우기
+
             stat_df = pd.DataFrame(stats)
             stat_df = stat_df.interpolate(method='linear', limit_direction='both')
             stat_df = stat_df.fillna(method='bfill').fillna(method='ffill')
-            self.profile_table[k] = stat_df
+            self.violation_cost_lut[k] = stat_df
 
-    def estimate_risk(self, s_curr, config_k):
+    def estimate_violation_cost(self, s_curr, policy_id):
         """
-        [Step 2] Online Risk Estimation
-        현재 Sparsity(s_curr)에 대해 해당 Config의 예상 Risk를 계산
+        [RP-MPQ Online] Per-Sample Violation Cost Estimation (Eq.33)
+        V_bar(pi; xi_t) = mu + lambda * sigma
         """
-        profile = self.profile_table[config_k]
+        profile = self.violation_cost_lut[policy_id]
         s = np.clip(s_curr, profile['S'].min(), profile['S'].max())
-        
-        # 선형 보간
+
         mu_hat = np.interp(s, profile['S'], profile['mu'])
         sigma_hat = np.interp(s, profile['S'], profile['sigma'])
-        
-        # Risk = Mean + Lambda * Std
-        risk = mu_hat + self.lambda_risk * sigma_hat
-        return risk
 
-    def select_policy(self, s_curr, target_nmse_linear):
+        violation_cost_surrogate = mu_hat + self.lambda_budget * sigma_hat
+        return violation_cost_surrogate
+
+    def select_online_policy(self, s_curr, target_violation_threshold):
         """
-        [Step 3] Greedy Selection Rule
-        Saving이 높은(비용 싼) 순서대로 탐색하여, Risk가 Target 이하인 첫 번째 정책 선택
+        [RP-MPQ Online] Policy Selection under Budget (Eq.34)
+        Greedy: scan from highest saving to lowest, pick first policy whose cost <= threshold
         """
-        # Default: Fallback (가장 안전한 정책 = Saving이 가장 낮은 0번)
-        best_config_k = self.configs[0]
-        
-        # 압축률 높은 순(List의 끝) -> 낮은 순으로 순회
-        for k in reversed(self.configs):
-            risk = self.estimate_risk(s_curr, k)
-            if risk <= target_nmse_linear:
-                best_config_k = k
-                break 
-        
-        # 선택된 Config에 맞는 Policy Dict 찾기
-        row = self.lut_df.iloc[(self.lut_df['Actual_Saving'] - best_config_k).abs().argsort()[:1]]
+        best_policy_id = self.policy_ids[0]
+
+        for k in reversed(self.policy_ids):
+            violation_cost_surrogate = self.estimate_violation_cost(s_curr, k)
+            if violation_cost_surrogate <= target_violation_threshold:
+                best_policy_id = k
+                break
+
+        row = self.lut_df.iloc[(self.lut_df['Actual_Saving'] - best_policy_id).abs().argsort()[:1]]
         policy = row['Policy'].values[0]
-        
-        return policy, best_config_k
+
+        return policy, best_policy_id
 
 
-def get_sparsity_bins_fixed(dataset, device):
-    """
-    기존: 그룹별 인덱스만 반환
-    수정: 모든 샘플의 실제 Sparsity(0.001 level) 리스트 추가 반환
-    """
+def compute_hoyer_sparsity_bins(dataset, device):
+    """Compute Hoyer's sparsity measure (Eq.34) and return tercile bins + continuous values"""
     all_sparsity = []
-    # 속도를 위해 배치 단위로 계산
     loader = DataLoader(dataset, batch_size=256, shuffle=False)
-    
+
     for batch in loader:
-        # L1 / L2 ratio 계산
         l1 = torch.norm(batch, p=1, dim=(1,2,3))
         l2 = torch.norm(batch, p=2, dim=(1,2,3))
         sparsity = (l1 / (l2 + 1e-8)).cpu().numpy()
         all_sparsity.extend(sparsity)
-    
+
     all_sparsity = np.array(all_sparsity)
-    
-    # 기존 그룹화 로직 유지 (기존 코드 호환용)
+
     bins = {
         "High": np.where(all_sparsity > np.percentile(all_sparsity, 66))[0].tolist(),
-        "Mid":  np.where((all_sparsity <= np.percentile(all_sparsity, 66)) & 
+        "Mid":  np.where((all_sparsity <= np.percentile(all_sparsity, 66)) &
                          (all_sparsity > np.percentile(all_sparsity, 33)))[0].tolist(),
         "Low":  np.where(all_sparsity <= np.percentile(all_sparsity, 33))[0].tolist()
     }
-    
-    return bins, all_sparsity # ✅ 모든 샘플의 S값(연속값)을 함께 반환
+
+    return bins, all_sparsity
 
 def verify_fc_quantization(model, lut_path, device):
     import pandas as pd
@@ -171,54 +165,50 @@ def verify_fc_quantization(model, lut_path, device):
     import numpy as np
 
     print("\n" + "="*60)
-    print("🕵️‍♂️ [FC Layer Verification")
+    print("[INFO] FC Layer Verification")
     print("="*60)
 
-    # 1. 정책 로드
+    # 1. Load policy
     df = pd.read_csv(lut_path)
     policy_str = df.iloc[0]['Policy']
     policy = ast.literal_eval(policy_str) if isinstance(policy_str, str) else policy_str
 
-    # 2. 모델의 FC 레이어 원본 가져오기
+    # 2. Get FC layer from model
     real_model = model.module if isinstance(model, nn.DataParallel) else model
     
-    # 모델 구조에 따라 fc 위치 찾기
+    # Find fc layer based on model structure
     fc_layer = None
     if hasattr(real_model, 'encoder'):
         if hasattr(real_model.encoder, 'fc'): fc_layer = real_model.encoder.fc
-        elif hasattr(real_model.encoder, 'layers'): # 혹시 구조가 다를 경우 대비
+        elif hasattr(real_model.encoder, 'layers'):
              for n, m in real_model.encoder.named_modules():
                  if 'fc' in n: fc_layer = m; break
     
     if fc_layer is None:
-        print("🚨 [ERROR] 모델에서 'fc' 레이어를 찾을 수 없습니다!")
+        print("[ERROR] Could not find 'fc' layer in model!")
         return
 
-    # 3. 변경 전 가중치 복사
+    # 3. Clone pre-quantization weights
     w_before = fc_layer.weight.data.clone()
-    print(f"👉 FC Layer Shape: {w_before.shape} (Should be huge)")
+    print(f"[INFO] FC Layer Shape: {w_before.shape}")
 
-    # 4. 정책 적용 (우리가 수정한 apply_mp_policy 호출)
-    print("⚡ Applying Policy...")
-    apply_mp_policy(model, policy, device)
+    # 4. Apply precision policy
+    print("[INFO] Applying precision policy...")
+    apply_precision_policy(model, policy, device)
 
-    # 5. 변경 후 가중치 비교
+    # 5. Compare weights after quantization
     w_after = fc_layer.weight.data
     
-    # 변화량 계산 (L2 Norm)
     diff = torch.norm(w_before - w_after).item()
-    
-    # fc_part 관련 정책이 있는지 확인
-    fc_keys = [k for k in policy.keys() if 'fc_part' in k]
-    print(f"👉 Policy contains {len(fc_keys)} split parts for FC.")
 
-    print(f"👉 Weight Difference (L2): {diff:.6f}")
+    fc_keys = [k for k in policy.keys() if 'fc_part' in k]
+    print(f"[INFO] Policy contains {len(fc_keys)} split parts for FC.")
+    print(f"[INFO] Weight Difference (L2): {diff:.6f}")
 
     if diff == 0:
-        print("❌ [FAIL] FC 레이어 가중치가 1도 안 변했습니다. (여전히 FP32)")
-        print("   이유: apply_mp_policy가 'fc'를 못 찾았거나, 매핑 로직이 안 돌았습니다.")
+        print("[FAIL] FC layer weights unchanged (still FP32)")
     else:
-        print("✅ [SUCCESS] FC 레이어 가중치가 변했습니다! (Split Quantization 성공)")
+        print("[OK] FC layer weights changed (split quantization applied)")
 
 def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, args):
     """
@@ -233,31 +223,31 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
     from tqdm import tqdm
     from torch.utils.data import DataLoader, Subset
 
-    # 캐시 설정
-    cache_path = f"exp3_nmse_cache_{args.encoder}.npz"
+    # Cache setup
+    cache_path = os.path.join(RESULTS_CSV, f"exp3_nmse_cache_{args.encoder}.npz")
     real_model = model.module if isinstance(model, nn.DataParallel) else model
     original_state = {k: v.clone().cpu() for k, v in real_model.state_dict().items()}
     min_val, range_val = norm_params
     
-    # LUT 로드
+    # Load LUT
     df_lut = pd.read_csv(lut_path)
     if isinstance(df_lut['Policy'].iloc[0], str):
         df_lut['Policy'] = df_lut['Policy'].apply(ast.literal_eval)
 
-    # 1. 데이터 로드 또는 계산
+    # 1. Load cached data or compute
     if os.path.exists(cache_path):
-        print(f"\n♻️ Loading cached NMSE data: {cache_path}")
+        print(f"\n[INFO] Loading cached NMSE data: {cache_path}")
         data = np.load(cache_path, allow_pickle=True)
         fp32_nmses_linear = data['fp32_nmses']
         all_raw_nmses = data['raw_nmses'] 
         savings = data['savings']
         base_kl_nmses = data['kl_nmses']
     else:
-        print(f"\n⚡ No cache. calculating NMSEs...")
+        print(f"\n[INFO] No cache found. Calculating NMSEs...")
         
-        bins, _ = get_sparsity_bins_fixed(loader.dataset, device)
+        bins, _ = compute_hoyer_sparsity_bins(loader.dataset, device)
         sub_indices = []
-        for g in ["High", "Mid", "Low"]: sub_indices.extend(bins[g][:200]) # 총 600개
+        for g in ["High", "Mid", "Low"]: sub_indices.extend(bins[g][:200]) # total 600 samples
         analysis_loader = DataLoader(Subset(loader.dataset, sub_indices), batch_size=args.test_batch_size, shuffle=False)
         
         # (1) FP32 Baseline NMSE
@@ -282,10 +272,10 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
         base_kl_nmses = []
 
         for _, row in tqdm(df_lut.iterrows(), total=len(df_lut), desc="NMSE Analysis"):
-            # ✅ [CRITICAL FIX] 매 반복마다 모델 가중치를 FP32 원본으로 초기화
+            # Reset to FP32 weights before each policy evaluation
             real_model.load_state_dict(original_state)
             
-            apply_mp_policy(model, row['Policy'], device)
+            apply_precision_policy(model, row['Policy'], device)
             real_model.eval()
             
             policy_nmses = []
@@ -305,13 +295,13 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
             savings.append(row['Actual_Saving'])
             base_kl_nmses.append(row['NMSE_KL'])
 
-        # 루프 종료 후 모델 복구
+        # Restore model weights after loop
         real_model.load_state_dict(original_state)
 
         np.savez(cache_path, fp32_nmses=np.array(fp32_nmses_linear), 
                  raw_nmses=np.array(all_raw_nmses), savings=np.array(savings), kl_nmses=np.array(base_kl_nmses))
 
-    # 2. 통계 분석
+    # 2. Statistical analysis
     final_results = []
     fp32_avg = np.mean(fp32_nmses_linear)
     all_raw_nmses = np.array(all_raw_nmses)
@@ -335,8 +325,7 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
         s_nmses = all_raw_nmses[i]
         s_nmses_db = 10 * np.log10(s_nmses + 1e-15)
         
-        # ✅ [FIX] Base_NMSE를 CSV 값이 아닌, 현재 계산된 평균값으로 사용 (정합성 확인용)
-        # 만약 그래프가 이상하면 전체가 다 같이 이상해야 함.
+        # Use computed average (not CSV value) for consistency
         calculated_avg_nmse = 10 * np.log10(np.mean(s_nmses) + 1e-15)
         
         ratios = fp32_avg / (s_nmses + 1e-12)
@@ -347,7 +336,7 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
 
         final_results.append({
             "Actual_Saving": saving,
-            "Base_NMSE": calculated_avg_nmse, # CSV값 대신 실제 계산값 사용
+            "Base_NMSE": calculated_avg_nmse, # Use computed value instead of CSV
             "NMSE_Sigma": np.std(s_nmses_db),
             "High_S": 10 * np.log10(np.mean(s_nmses[:200]) + 1e-15),
             "Mid_S":  10 * np.log10(np.mean(s_nmses[200:400]) + 1e-15),
@@ -357,22 +346,22 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
 
     res_df = pd.DataFrame(final_results)
 
-    # 3. 그래프 그리기
+    # 3. Plot results
     # [1] NMSE Performance
     plt.figure(figsize=(10, 6))
     plt.plot(res_df['Actual_Saving'], res_df['Base_NMSE'], 'k--', label='Avg NMSE')
     plt.plot(res_df['Actual_Saving'], res_df['High_S'], 'r-o', label='High Sparsity')
     plt.plot(res_df['Actual_Saving'], res_df['Low_S'], 'b-^', label='Low Sparsity')
-    plt.xlabel("Saving (%)"); plt.ylabel("NMSE (dB)"); plt.legend(); plt.grid(True, alpha=0.5)
-    plt.title(f"Exp 3-1: Sparsity Analysis ({args.encoder})")
-    plt.savefig(f"exp3_nmse_sparsity_{args.encoder}.png")
+    plt.xlabel("Encoder BOPs Saving (%)"); plt.ylabel("NMSE (dB)"); plt.legend(); plt.grid(True, alpha=0.5)
+    plt.title(f"Sparsity-Stratified NMSE under MP Policies ({args.encoder})")
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_sparsity_{args.encoder}.png"))
 
     # [2] Stability
     plt.figure(figsize=(10, 6))
     plt.plot(res_df['Actual_Saving'], res_df['NMSE_Sigma'], 'm-D')
-    plt.xlabel("Saving (%)"); plt.ylabel("Sigma (dB)"); plt.grid(True, alpha=0.5)
-    plt.title(f"Exp 3-2: NMSE Stability ({args.encoder})")
-    plt.savefig(f"exp3_nmse_sigma_{args.encoder}.png")
+    plt.xlabel("Encoder BOPs Saving (%)"); plt.ylabel("Sigma (dB)"); plt.grid(True, alpha=0.5)
+    plt.title(f"NMSE Stability ({args.encoder})")
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_sigma_{args.encoder}.png"))
 
     # [3] CDF
     if len(target_cdf_data) > 0:
@@ -382,23 +371,23 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
         plt.plot(sorted_data, yvals, 'k-', linewidth=2, label=f'CDF @ {res_df.loc[closest_idx, "Actual_Saving"]:.1f}%')
         plt.axvline(x=res_df.loc[closest_idx, "Base_NMSE"], color='r', linestyle='--', label='Avg NMSE')
         plt.xlabel("NMSE (dB)"); plt.ylabel("CDF"); plt.grid(True, alpha=0.5); plt.legend(loc='lower right')
-        plt.title(f"Exp 3-3: NMSE Distribution CDF ({args.encoder})")
-        plt.savefig(f"exp3_nmse_cdf_{args.encoder}.png")
+        plt.title(f"NMSE Distribution CDF ({args.encoder})")
+        plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_cdf_{args.encoder}.png"))
 
     # [4] NMSE Outage
     plt.figure(figsize=(10, 6))
     plt.plot(res_df['Actual_Saving'], res_df['Outage_Prob'], 'r-X', label='NMSE Outage (< 90% of FP32)')
     plt.axhline(0.1, color='k', linestyle=':', label='10% Limit')
-    plt.ylim(-0.05, 1.05); plt.xlabel("Saving (%)"); plt.ylabel("Outage Probability"); plt.grid(True, alpha=0.5); plt.legend()
-    plt.title(f"Exp 3-4: NMSE Outage Probability ({args.encoder})")
-    plt.savefig(f"exp3_nmse_outage_{args.encoder}.png")
+    plt.ylim(-0.05, 1.05); plt.xlabel("Encoder BOPs Saving (%)"); plt.ylabel("Outage Probability"); plt.grid(True, alpha=0.5); plt.legend()
+    plt.title(f"NMSE-Based Outage Probability ({args.encoder})")
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_outage_{args.encoder}.png"))
     
-    print(f"✅ [Exp 3] NMSE analysis complete (Graphs 1~4 Saved).")
+    print(f"[INFO] Exp 3: NMSE analysis complete (4 graphs saved).")
     return res_df
     
     
     
-def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args):
+def run_exp3_5_rate_outage_analysis(model, loader, lut_path, device, norm_params, args):
     """
     [Exp 3.5] Generalized Rigorous Sum-Rate & Multi-Threshold Outage Analysis
     - Generalization: Dynamically handles any number of SNR levels and Outage Thresholds.
@@ -415,21 +404,21 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
     from torch.utils.data import DataLoader, Subset 
 
     print("\n" + "="*80)
-    print("🚀 [Exp 3.5] Generalized Multi-Threshold Outage Analysis")
+    print("[INFO] Exp 3.5: Rate-Based Outage under Identical Budgets (Section VI-D)")
     print("="*80)
 
     # ---------------------------------------------------------
     # [Helper Function] Pareto Frontier Smoothing
     # ---------------------------------------------------------
 # ---------------------------------------------------------
-    # [Helper Function] Pareto Frontier Smoothing (수정됨)
+    # [Helper Function] Pareto Frontier Smoothing (revised)
     # ---------------------------------------------------------
     def get_pareto_frontier_max(bops_list, metric_list):
-        # [수정 1] pandas Series가 들어올 경우를 대비해 .empty 체크 또는 리스트 변환
+        # Handle pandas Series input: check .empty or convert to list
         if isinstance(bops_list, pd.Series):
             if bops_list.empty: return [], []
             bops_list = bops_list.tolist()
-        elif not bops_list: # 리스트인 경우
+        elif not bops_list: # list case
             return [], []
 
         if isinstance(metric_list, pd.Series):
@@ -446,7 +435,7 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
         return pareto_x[::-1], pareto_y[::-1]
 
     def get_pareto_frontier_min(bops_list, metric_list):
-        # [수정 2] 동일하게 수정
+        # Same Series/list handling as get_pareto_frontier_max
         if isinstance(bops_list, pd.Series):
             if bops_list.empty: return [], []
             bops_list = bops_list.tolist()
@@ -469,28 +458,28 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
     # ---------------------------------------------------------
     # Setup
     # ---------------------------------------------------------
-    # [설정] 분석할 SNR과 Threshold 리스트 (개수 자유롭게 변경 가능)
+    # SNR levels and outage thresholds
     snr_list = [10, 20, 30] 
     outage_thresholds = [0.99, 0.98, 0.95] # 99%, 98%, 95%
     
     min_val, range_val = norm_params
     real_model = model.module if isinstance(model, torch.nn.DataParallel) else model
     original_state = {k: v.clone().cpu() for k, v in real_model.state_dict().items()}
-    cache_path = f"exp3_5_rate_baseline_{args.encoder}_final.npz"
+    cache_path = os.path.join(RESULTS_CSV, f"exp3_5_rate_baseline_{args.encoder}_final.npz")
 
     # Balanced Sampling
     try:
-        bins, _ = get_sparsity_bins_fixed(loader.dataset, device)
+        bins, _ = compute_hoyer_sparsity_bins(loader.dataset, device)
         sub_indices = []
         for g in ["High", "Mid", "Low"]: 
             if g in bins: sub_indices.extend(bins[g][:100])
         if not sub_indices: raise ValueError
     except:
-        print("⚠️ Warning: Balanced sampling failed or bins empty. Using first 300 samples.")
+        print("[WARN] Balanced sampling failed or bins empty. Using first 300 samples.")
         sub_indices = list(range(min(300, len(loader.dataset))))
         
     eval_loader = DataLoader(Subset(loader.dataset, sub_indices), batch_size=args.test_batch_size, shuffle=False)
-    print(f"📊 Evaluated on {len(sub_indices)} Balanced Samples")
+    print(f"[INFO] Evaluated on {len(sub_indices)} balanced samples")
 
     # ---------------------------------------------------------
     # Phase 0 & 1: Baseline Calculation (Perfect CSI & FP32)
@@ -498,20 +487,20 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
     perfect_rates = {snr: [] for snr in snr_list}
     fp32_rates = {}
     
-    # 캐시 로드
+    # Load cache
     if os.path.exists(cache_path):
         try:
             loaded = np.load(cache_path, allow_pickle=True)
             fp32_rates = loaded['fp32_rates'].item()
-            # 캐시된 SNR 키가 현재 snr_list와 다르면 다시 계산
+            # Recompute if cached SNR keys differ from current snr_list
             if not all(k in fp32_rates for k in snr_list): raise ValueError
-            print(f"♻️ Loading cached Baseline Rates.")
+            print(f"[INFO] Loading cached baseline rates.")
         except:
             fp32_rates = {}
 
-    # 계산 필요시 실행
+    # Compute if not cached
     if not fp32_rates or not perfect_rates[snr_list[0]]:
-        print(f"📊 Calculating Baselines (Perfect & FP32)...")
+        print(f"[INFO] Calculating baselines (Perfect CSI & FP32)...")
         real_model.load_state_dict(original_state)
         real_model.eval()
         
@@ -534,7 +523,7 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
                     fp32_rates[snr].extend(r_fp32.cpu().numpy())
         np.savez(cache_path, fp32_rates=fp32_rates)
     
-    # Perfect Rate 메모리 로드 보장 (캐시 사용 시)
+    # Ensure perfect rates are in memory (when loaded from cache)
     if not perfect_rates[snr_list[0]]:
          with torch.no_grad():
             for d in eval_loader:
@@ -552,11 +541,11 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
         df_lut['Policy'] = df_lut['Policy'].apply(ast.literal_eval)
         
     analysis_results = []
-    print(f"📊 2. Scanning {len(df_lut)} Policies...")
+    print(f"[INFO] 2. Scanning {len(df_lut)} policies...")
     
     for _, row in tqdm(df_lut.iterrows(), total=len(df_lut), desc="Rate Sweep"):
         real_model.load_state_dict(original_state)
-        apply_mp_policy(model, row['Policy'], device)
+        apply_precision_policy(model, row['Policy'], device)
         real_model.eval()
         
         current_rates = {snr: [] for snr in snr_list}
@@ -596,10 +585,10 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
     # ---------------------------------------------------------
     # Phase 3: Plotting Sum-Rate (Dynamic Colors)
     # ---------------------------------------------------------
-    print(f"📊 3. Plotting Sum-Rate...")
+    print(f"[INFO] 3. Plotting transmission rate...")
     plt.figure(figsize=(10, 7))
     
-    # [Generalization] SNR 개수에 맞춰 색상맵 생성 (tab10, viridis 등 사용)
+    # Generate colormap scaled to number of SNR values
     cmap = plt.get_cmap('tab10') 
     snr_colors = {snr: cmap(i % 10) for i, snr in enumerate(snr_list)}
     
@@ -612,46 +601,45 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
         plt.axhline(perf_val, color='k', linestyle='--', linewidth=1.0, alpha=0.4) 
         plt.axhline(base_val, color=c, linestyle=':', linewidth=1.5, alpha=0.7)    
         
-        # SRP-MPQ
+        # RP-MPQ
         smooth_x, smooth_y = get_pareto_frontier_max(res_df['Actual_Saving'], res_df[f"Rate_{snr}dB"])
-        plt.plot(smooth_x, smooth_y, 
-                 marker='o', linestyle='-', linewidth=2.0, markersize=4, 
-                 color=c, label=f'SRP-MPQ ({snr}dB)')
+        plt.plot(smooth_x, smooth_y,
+                 marker='o', linestyle='-', linewidth=2.0, markersize=4,
+                 color=c, label=f'RP-MPQ ({snr}dB)')
         
-        # 범례용 (첫 번째 SNR일 때만 그림)
+        # Legend entries (drawn only for first SNR)
         if snr == snr_list[0]:
              plt.plot([], [], 'k--', label='Perfect CSI')
              plt.plot([], [], 'k:', label='FP32 Baseline')
 
-    plt.xlabel("BOPs Saving (%)", fontsize=12)
+    plt.xlabel("Encoder BOPs Saving (%)", fontsize=12)
     plt.ylabel("Sum Rate (bps/Hz)", fontsize=12)
     plt.grid(True, alpha=0.3)
-    plt.legend(fontsize='small', loc='lower left', ncol=min(3, len(snr_list))) # 범례 컬럼 수도 조정
-    plt.title(f"Sum-Rate vs BOPs (Smoothed) - {args.encoder}", fontsize=14)
+    plt.legend(fontsize='small', loc='lower left', ncol=min(3, len(snr_list)))
+    plt.title(f"Transmission Rate vs UE Encoder BOPs Saving - {args.encoder}", fontsize=14)
     plt.tight_layout()
-    plt.savefig(f"exp3_5_rate_final_{args.encoder}.png", dpi=300)
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_5_rate_final_{args.encoder}.png"), dpi=300)
     print(f"   Saved Rate Plot: exp3_5_rate_final_{args.encoder}.png")
 
     # ---------------------------------------------------------
     # Phase 4: Plotting Outage (Dynamic Subplots)
     # ---------------------------------------------------------
-    print(f"📊 4. Plotting Outage (Dynamic Subplots)...")
+    print(f"[INFO] 4. Plotting outage (dynamic subplots)...")
     
-    # [Generalization] SNR 개수만큼 컬럼 생성
+    # Create one subplot column per SNR level
     n_plots = len(snr_list)
     fig, axes = plt.subplots(1, n_plots, figsize=(6 * n_plots, 5), sharey=True, constrained_layout=True)
     
-    # [Generalization] axes가 1개일 때도 리스트처럼 순회 가능하게 처리
+    # Ensure axes is iterable even with a single subplot
     if n_plots == 1: axes = [axes]
     
-    # [Generalization] Threshold 개수에 맞춰 스타일/색상 생성
-    # Threshold가 많으면 그라데이션(Red 계열)을 사용해 심각도 표현
+    # Generate threshold-dependent styles and colors (Reds gradient for severity)
     th_cmap = plt.get_cmap('Reds')
-    # 0.4 ~ 1.0 범위의 진하기를 사용 (너무 연하면 안보이므로)
+    # Use intensity range [0.4, 1.0] for visibility
     th_colors_list = [th_cmap(x) for x in np.linspace(0.4, 1.0, len(outage_thresholds))]
-    th_styles_list = ['-', '--', '-.', ':'] * (len(outage_thresholds)//4 + 1) # 스타일 순환
-    
-    # Threshold를 큰 순서(엄격한 순서)대로 정렬
+    th_styles_list = ['-', '--', '-.', ':'] * (len(outage_thresholds)//4 + 1) # cyclic styles
+
+    # Sort thresholds in descending order (strictest first)
     sorted_ths = sorted(outage_thresholds, reverse=True)
 
     for i, (ax, snr) in enumerate(zip(axes, snr_list)):
@@ -665,7 +653,7 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
 
             smooth_x, smooth_y = get_pareto_frontier_min(res_df['Actual_Saving'], res_df[col_name])
             
-            # 동적 스타일 할당
+            # Dynamic style assignment
             line_color = th_colors_list[j] 
             line_style = th_styles_list[j]
             
@@ -677,30 +665,28 @@ def run_exp3_5_rate_analysis(model, loader, lut_path, device, norm_params, args)
                     label=f'Limit {th_int}%')
 
         ax.set_title(f"SNR {snr}dB", fontsize=14, fontweight='bold', color=c)
-        ax.set_xlabel("BOPs Saving (%)", fontsize=12)
+        ax.set_xlabel("Encoder BOPs Saving (%)", fontsize=12)
         ax.grid(True, alpha=0.3, which='both')
-        
-        # 첫 번째 그래프에만 Y축 라벨
+
         if i == 0:
             ax.set_ylabel("Outage Probability", fontsize=12)
             ax.legend(loc='upper left', fontsize='small', title="Perf. Threshold")
 
-    plt.suptitle(f"Reliability Sensitivity Analysis: SNR vs Threshold ({args.encoder})", fontsize=16)
+    plt.suptitle(f"Rate-Based Outage under Identical Budgets ({args.encoder})", fontsize=16)
     
-    # 저장 경로 생성
-    plot_path = f"exp3_5_outage_subplots_{args.encoder}.png"
+    # Build save path
+    plot_path = os.path.join(RESULTS_PLOT, f"exp3_5_outage_subplots_{args.encoder}.png")
     plt.savefig(plot_path, dpi=300)
     print(f"   Saved Subplot: {plot_path}")
 
     return res_df
     
-def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, args):
+def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args):
     """
-    [Step 4] RANC Simulation (Final Version)
-    1. Granularity: 0.1% Saving Steps for smooth visualization.
-    2. Optimization: Uses 'Linear MSE' (not dB) for Lagrangian Cost.
-       -> Penalizes outliers heavily -> Lowers Outage Probability.
-    3. Sampling: Balanced 300 samples (Consistent with Exp 3.5).
+    [RP-MPQ Online] Reliability-Aware Policy Selection (Section VI-E)
+    1. Granularity: 0.1% saving steps for smooth visualization.
+    2. Optimization: Uses linear MSE for Lagrangian cost (heavy outlier penalty).
+    3. Sampling: Balanced 300 samples (consistent with Exp 3.5).
     """
     import pandas as pd
     import numpy as np
@@ -711,15 +697,15 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
     from torch.utils.data import DataLoader, Subset
 
     print("\n" + "="*80)
-    print("🧠 [Step 4] Running RANC Simulation (High-Resolution & Linear Optimization)")
+    print("[INFO] RP-MPQ Online Simulation (High-Resolution)")
     print("="*80)
 
     # ---------------------------------------------------------
     # [Step 0] Balanced Sampling
     # ---------------------------------------------------------
-    print("⚖️ [Setup] Preparing Balanced Samples...")
+    print("[INFO] Preparing balanced samples...")
     try:
-        bins, _ = get_sparsity_bins_fixed(test_loader.dataset, device)
+        bins, _ = compute_hoyer_sparsity_bins(test_loader.dataset, device)
         sub_indices = []
         for g in ["High", "Mid", "Low"]: 
             if g in bins: sub_indices.extend(bins[g][:100])
@@ -728,13 +714,13 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                                  batch_size=args.test_batch_size, shuffle=False)
         print(f"   -> Evaluated on {len(sub_indices)} Balanced Samples.")
     except:
-        print(f"⚠️ Warning: Balanced sampling failed. Using full test loader.")
+        print(f"[WARN] Balanced sampling failed. Using full test loader.")
         eval_loader = test_loader
 
     # ---------------------------------------------------------
     # Phase 1: Data Collection (Linear MSE + Rates)
     # ---------------------------------------------------------
-    print("📥 [Phase 1] Collecting Raw Data (Calculating Linear MSE)...")
+    print("[INFO] Phase 1: Collecting raw data (linear MSE)...")
     
     df_lut = pd.read_csv(lut_path)
     if isinstance(df_lut['Policy'].iloc[0], str):
@@ -768,7 +754,7 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
         bops_cost = (100 - saving_pct) / 100.0 
         
         real_model.load_state_dict(original_state)
-        apply_mp_policy(net, policy, device) 
+        apply_precision_policy(net, policy, device) 
         real_model.eval()
         
         sample_idx = 0
@@ -782,7 +768,7 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                 h_true = (d * range_val) + min_val - 0.5
                 h_hat = (x_hat * range_val) + min_val - 0.5
                 
-                # [핵심 수정] Linear MSE 계산 (최적화용)
+                # Linear-scale NMSE computation (used for optimization)
                 # MSE = ||h - h^||^2 / ||h||^2
                 error = torch.sum((h_true - h_hat)**2, dim=[1, 2, 3])
                 power = torch.sum(h_true**2, dim=[1, 2, 3])
@@ -801,8 +787,8 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                         'config_id': policy_id,
                         'bops': bops_cost,
                         'saving': saving_pct,
-                        'mse_linear': mse_linear[i], # 최적화 변수
-                        'nmse_db': nmse_db[i]        # 결과 리포트용
+                        'mse_linear': mse_linear[i], # optimization variable
+                        'nmse_db': nmse_db[i]        # for result reporting
                     }
                     for snr in snr_list:
                         entry[f'rate_{snr}'] = rates_batch[snr][i]
@@ -817,12 +803,12 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
     # [Final Generalized] Phase 2: Optimization (Margin-Normalized)
     # ---------------------------------------------------------
     
-def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, args):
+def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args):
     """
-    [Step 4] RANC Simulation (Multi-Target Version)
-    1. Optimization: Reliability-Weighted Safe Optimization (Safe v2)
-    2. Multi-Target: Runs optimization for QoS Targets [0.99, 0.98, 0.95] independently.
-    3. Visualization: Plots distinct curves for each QoS target to compare policies.
+    [RP-MPQ Online] Multi-Target Reliability-Aware Policy Selection (Section VI-E)
+    1. Optimization: Reliability-weighted safe optimization (violation cost, Eq.29)
+    2. Multi-Target: Runs for reliability targets gamma in {0.99, 0.98, 0.95} independently.
+    3. Visualization: Distinct curves for each gamma target.
     """
     import pandas as pd
     import numpy as np
@@ -833,15 +819,15 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
     from torch.utils.data import DataLoader, Subset
 
     print("\n" + "="*80)
-    print("🧠 [Step 4] Running RANC Simulation (Multi-Target: 99%, 98%, 95%)")
+    print("[INFO] RP-MPQ Online Simulation (Multi-Target: gamma=0.99, 0.98, 0.95)")
     print("="*80)
 
     # ---------------------------------------------------------
     # [Step 0] Balanced Sampling
     # ---------------------------------------------------------
-    print("⚖️ [Setup] Preparing Balanced Samples...")
+    print("[INFO] Preparing balanced samples...")
     try:
-        bins, _ = get_sparsity_bins_fixed(test_loader.dataset, device)
+        bins, _ = compute_hoyer_sparsity_bins(test_loader.dataset, device)
         sub_indices = []
         for g in ["High", "Mid", "Low"]: 
             if g in bins: sub_indices.extend(bins[g][:100])
@@ -850,13 +836,13 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                                  batch_size=args.test_batch_size, shuffle=False)
         print(f"   -> Evaluated on {len(sub_indices)} Balanced Samples.")
     except:
-        print(f"⚠️ Warning: Balanced sampling failed. Using full test loader.")
+        print(f"[WARN] Balanced sampling failed. Using full test loader.")
         eval_loader = test_loader
 
     # ---------------------------------------------------------
     # Phase 1: Data Collection (Linear MSE + Rates)
     # ---------------------------------------------------------
-    print("📥 [Phase 1] Collecting Raw Data (Calculating Linear MSE)...")
+    print("[INFO] Phase 1: Collecting raw data (linear MSE)...")
     
     df_lut = pd.read_csv(lut_path)
     if isinstance(df_lut['Policy'].iloc[0], str):
@@ -890,7 +876,7 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
         bops_cost = (100 - saving_pct) / 100.0 
         
         real_model.load_state_dict(original_state)
-        apply_mp_policy(net, policy, device) 
+        apply_precision_policy(net, policy, device) 
         real_model.eval()
         
         sample_idx = 0
@@ -937,52 +923,49 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
     # [Phase 2] Optimization Function (Safe Version v2)
     # ---------------------------------------------------------
     
-    def find_optimal_lambda_sensitivity_aware(df, target_avg_bops, rate_col, perf_col, gamma_target, tolerance=0.0005):
+    def calibrate_lagrange_multiplier(df, target_avg_bops, rate_col, perf_col, gamma, tolerance=0.0005):
         """
-        [Reliability-Weighted Safe Optimization]
-        - Sensitivity(민감도)를 Reliability Cost의 '가중치'로 사용하여
-        - 민감한 샘플(Sparse/Weak)을 보호하고, 튼튼한 샘플부터 절약하도록 유도.
+        Calibrate Lagrange multiplier lambda for RP-MPQ online policy selection (Section V-D).
+        Uses sparsity-weighted violation cost to protect weak samples.
         """
         lambda_min, lambda_max = 0.0, 1e9
         best_lambda, best_avg = 0.0, 0.0
         selected = None
-        
+
         rates = df[rate_col].values
         perfs = df[perf_col].values
         bops = df['bops'].values
         mse_linear = df['mse_linear'].values
-        
-        # 1. Sensitivity Calculation (Proxy using Perf)
-        # Perf 낮음 -> 신호 약함 -> 민감함 -> 1.0
-        if 'sensitivity' in df.columns:
-            sensitivity = df['sensitivity'].values
+
+        # Sparsity weight w_t (Eq.30): low perf -> high sensitivity -> larger weight
+        if 'sparsity_weight' in df.columns:
+            sparsity_weight = df['sparsity_weight'].values
         else:
             norm_perf = (perfs - perfs.min()) / (perfs.max() - perfs.min() + 1e-9)
-            sensitivity = 1.0 - norm_perf 
+            sparsity_weight = 1.0 - norm_perf
+
+        # Importance weight: w_t = 1 + alpha * s_t (Eq.30)
+        alpha = 2.0
+        importance_weight = 1.0 + (alpha * sparsity_weight)
         
-        # 2. Weighted Reliability Cost
-        alpha = 2.0 
-        w_sensitivity = 1.0 + (alpha * sensitivity)
-        
-        # (A) Outage Indicator (Frequency Control)
-        is_outage = (rates < gamma_target * perfs).astype(float)
-        
-        # (B) Soft Quadratic Penalty (Margin Control)
-        deficit = np.maximum(0, gamma_target * perfs - rates)
-        scale_factor = np.mean(perfs) * (1 - gamma_target) + 1e-9
+        # (A) Outage indicator (frequency control)
+        is_outage = (rates < gamma * perfs).astype(float)
+
+        # (B) Soft quadratic penalty (margin control)
+        deficit = np.maximum(0, gamma * perfs - rates)
+        scale_factor = np.mean(perfs) * (1 - gamma) + 1e-9
         soft_penalty = (deficit / scale_factor) ** 2
-        
+
         beta = 0.5
-        reliability_cost = w_sensitivity * (is_outage + beta * soft_penalty)
+        violation_cost = importance_weight * (is_outage + beta * soft_penalty)
         
-        # Tie-breaker
         drift_cost = 1e-9 * mse_linear
-        
+
         for _ in range(100):
             curr_lambda = (lambda_min + lambda_max) / 2
-            
-            # 3. Total Cost (Dual Consistency: Linear BOPS)
-            total_cost = reliability_cost + (curr_lambda * bops) + drift_cost
+
+            # Total cost: violation + lambda * kappa_pi (Eq.31)
+            total_cost = violation_cost + (curr_lambda * bops) + drift_cost
             
             df['temp_cost'] = total_cost
             
@@ -1003,34 +986,34 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
             
         return best_lambda, best_avg, selected
     
-    print("\n⚙️ [Phase 2] Optimizing Control Policy (Multi-Target)...")
+    print("\n[INFO] Phase 2: Optimizing control policy (multi-target)...")
     
     min_save = rate_df['saving'].min()
     max_save = rate_df['saving'].max()
     target_savings = np.arange(np.ceil(min_save), np.floor(max_save) + 0.1, 0.1)
     
-    # [핵심 변경] Target 리스트 확장 (0.99, 0.98, 0.95)
-    target_qos_list = [0.99, 0.98, 0.95] 
+    # Reliability targets gamma (Section V)
+    reliability_targets = [0.99, 0.98, 0.95]
     
     ranc_results = []
-    # 분석용 Outage Thresholds
+    # Outage thresholds for analysis
     outage_thresholds = [0.99, 0.98, 0.95]
 
     for snr in snr_list:
-        print(f"\n🔍 Tuning for SNR {snr}dB...")
+        print(f"\n[INFO] Tuning for SNR {snr}dB...")
         rate_col = f'rate_{snr}'
         perf_col = f'perf_{snr}'
         
-        for qos_target in target_qos_list:
+        for qos_target in reliability_targets:
             desc_str = f"Sim {snr}dB | Target QoS {int(qos_target*100)}%"
             
             for sav in tqdm(target_savings, desc=desc_str):
                 target_bops_cost = (100 - sav) / 100.0
                 
-                # 최적화 수행
-                opt_lambda, realized_bops, final_selection = find_optimal_lambda_sensitivity_aware(
+                # Run optimization
+                opt_lambda, realized_bops, final_selection = calibrate_lagrange_multiplier(
                     rate_df, target_bops_cost, rate_col, perf_col, 
-                    gamma_target=qos_target 
+                    gamma=qos_target 
                 )
                 
                 realized_saving = (1 - realized_bops) * 100
@@ -1039,7 +1022,7 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                     'Realized_Saving': realized_saving,
                     'Lambda': opt_lambda,
                     'SNR_Context': snr,
-                    'QoS_Target': qos_target # 그룹화 키
+                    'QoS_Target': qos_target # grouping key
                 }
                 
                 r_quant = final_selection[rate_col].values
@@ -1047,7 +1030,7 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                 
                 res_entry[f'Rate_{snr}'] = np.mean(r_quant)
                 
-                # 모든 Threshold에 대해 Outage 기록 (분석용)
+                # Record outage for all thresholds (for analysis)
                 for th in outage_thresholds:
                     is_outage = r_quant < (r_perf * th)
                     res_entry[f'Outage_{snr}dB_{int(th*100)}'] = np.mean(is_outage)
@@ -1055,17 +1038,17 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                 ranc_results.append(res_entry)
 
     ranc_df = pd.DataFrame(ranc_results)
-    print("✅ RANC Simulation Completed.")
+    print("[INFO] RP-MPQ online simulation completed.")
 
     # ---------------------------------------------------------
     # Phase 3: Plotting (Updated for Multi-Target)
     # ---------------------------------------------------------
-    print("\n📊 [Phase 3] Plotting Multi-Target Results...")
+    print("\n[INFO] Phase 3: Plotting multi-target results...")
     cmap = plt.get_cmap('tab10')
     snr_colors = {snr: cmap(i%10) for i, snr in enumerate(snr_list)}
     
-    # Target 별 스타일 지정
-    # 99%: 실선/별, 98%: 파선/세모, 95%: 점선/원
+    # Per-target line styles
+    # 99%: solid/star, 98%: dashed/triangle, 95%: dotted/circle
     target_styles = {
         0.99: {'ls': '-', 'marker': '*', 'alpha': 1.0},
         0.98: {'ls': '--', 'marker': '^', 'alpha': 0.7},
@@ -1091,41 +1074,41 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
     # [Plot 1] Rate Overlay
     plt.figure(figsize=(10, 7))
     
-    # Baseline 그리기 (한 번만)
+    # Plot baselines (once)
     if baseline_df is not None:
         for snr in snr_list:
             bx, by = get_pareto_max(baseline_df['Actual_Saving'], baseline_df[f"Rate_{snr}dB"])
-            plt.plot(bx, by, color=snr_colors[snr], linestyle='-', linewidth=3, alpha=0.3, label=f'Base {snr}dB' if snr==10 else "")
+            plt.plot(bx, by, color=snr_colors[snr], linestyle='-', linewidth=3, alpha=0.3, label=f'Static MP ({snr}dB)' if snr==10 else "")
             
-    # RANC 그리기 (Target 별로 분리)
+    # Plot RP-MPQ results (separated by target)
     for snr in snr_list:
-        for qos_t in target_qos_list:
-            # 해당 SNR과 Target에 맞는 데이터만 필터링
+        for qos_t in reliability_targets:
+            # Filter data matching this SNR and target
             subset = ranc_df[(ranc_df['SNR_Context'] == snr) & (ranc_df['QoS_Target'] == qos_t)]
             subset = subset.sort_values('Realized_Saving')
             
             style = target_styles.get(qos_t, {'ls': '-', 'marker': '.'})
-            label_str = f"RANC {snr}dB (Target {int(qos_t*100)}%)"
+            label_str = f"RP-MPQ {snr}dB (gamma={qos_t})"
             
             plt.plot(subset['Realized_Saving'], subset[f'Rate_{snr}'], 
                      color=snr_colors[snr], linestyle=style['ls'], marker=style['marker'], 
                      markersize=5, alpha=style['alpha'], label=label_str)
                  
-    plt.xlabel("BOPs Saving (%)")
+    plt.xlabel("Encoder BOPs Saving (%)")
     plt.ylabel("Sum Rate (bps/Hz)")
     plt.grid(True, alpha=0.3)
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left') # 범례 밖으로 뺌 (너무 많아서)
-    plt.title(f"Rate: Baseline vs Multi-Target RANC - {args.encoder}")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.title(f"Rate: Static MP vs RP-MPQ (gamma targets) - {args.encoder}")
     plt.tight_layout()
-    plt.savefig(f"exp4_final_ranc_rate_multi_{args.encoder}.png", dpi=300)
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp4_final_ranc_rate_multi_{args.encoder}.png"), dpi=300)
 
     # [Plot 2] Outage Overlay (Complex)
-    # 각 SNR 별로 Subplot 생성
+    # Create one subplot per SNR
     n_plots = len(snr_list)
     fig, axes = plt.subplots(1, n_plots, figsize=(6 * n_plots, 5), sharey=True)
     if n_plots == 1: axes = [axes]
     
-    # Outage Threshold 별 색상
+    # Colors per outage threshold
     th_cmap = plt.get_cmap('Reds')
     th_colors = [th_cmap(x) for x in np.linspace(0.4, 1.0, len(outage_thresholds))]
     
@@ -1135,7 +1118,7 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
         c = snr_colors[snr]
         ax.set_title(f"SNR {snr}dB (Outage Analysis)", color=c, fontweight='bold')
         
-        # 1. Baseline Outage (Threshold 별로 그리기)
+        # 1. Baseline Outage (one curve per threshold)
         for j, th in enumerate(sorted(outage_thresholds, reverse=True)):
             th_int = int(th*100)
             col = f"Outage_{snr}dB_{th_int}"
@@ -1146,37 +1129,37 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
                 ax.plot(bx, by, color=lc, linestyle='-', alpha=0.3, linewidth=2, 
                         label=f'Base {th_int}% Limit' if j==0 else "")
         
-        # 2. RANC Outage (자기 자신의 Target에 맞는 Outage만 그리기)
-        # 예: Target 99%인 RANC 정책은 Outage_99 그래프를, Target 95%는 Outage_95 그래프를 그린다.
-        for qos_t in target_qos_list:
+        # 2. RP-MPQ Outage (plot only the outage matching each policy's own target)
+        # e.g., gamma=99% policy shows Outage_99; gamma=95% shows Outage_95
+        for qos_t in reliability_targets:
             subset = ranc_df[(ranc_df['SNR_Context'] == snr) & (ranc_df['QoS_Target'] == qos_t)]
             subset = subset.sort_values('Realized_Saving')
             
-            # 내가 목표로 했던 Threshold의 결과만 보여줌 (가장 의미 있음)
+            # Show only the outage corresponding to the intended target (most meaningful)
             target_col = f"Outage_{snr}dB_{int(qos_t*100)}"
             
             style = target_styles.get(qos_t, {'ls': '-', 'marker': '.'})
-            # 색상은 Target별 스타일을 따르되, 검은색 계열로 통일하거나 SNR 색 사용
+            # Color follows per-target style; use matching threshold color
             
             if qos_t in sorted_thresholds:
-                j = sorted_thresholds.index(qos_t) # 순서 찾기
-                lc = th_colors[j]                  # Baseline과 똑같은 색(lc) 가져오기
+                j = sorted_thresholds.index(qos_t) # find index
+                lc = th_colors[j]                  # use same color as baseline
             else:
                 lc = 'black'
                 
             ax.plot(subset['Realized_Saving'], subset[target_col], 
                     color=lc, linestyle=style['ls'], marker=style['marker'], markersize=5, 
-                    alpha=0.8, label=f'RANC Target {int(qos_t*100)}%')
+                    alpha=0.8, label=f'RP-MPQ gamma={qos_t}')
 
         ax.grid(True, alpha=0.3)
-        ax.set_xlabel("Saving (%)")
-        if i==0: 
-            ax.set_ylabel("Outage Prob")
+        ax.set_xlabel("Encoder BOPs Saving (%)")
+        if i==0:
+            ax.set_ylabel("Outage Probability")
             ax.legend()
     
     plt.tight_layout()
-    plt.savefig(f"exp4_final_ranc_outage_multi_{args.encoder}.png", dpi=300)
-    print("✅ High-Resolution Exp 4 (Multi-Target) Completed.")
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp4_final_ranc_outage_multi_{args.encoder}.png"), dpi=300)
+    print("[INFO] Exp 4 (RP-MPQ multi-target) completed.")
 
     real_model.load_state_dict(original_state)
     return ranc_df
@@ -1184,7 +1167,7 @@ def run_exp4_ranc_simulation(net, test_loader, lut_path, device, baseline_df, ar
 
     
 # =========================================================
-# ✅ [0] Helper Classes (Dataset, Loss)
+# [0] Dataset & Loss
 # =========================================================
 class CsiDataset(Dataset):
     def __init__(self, mat_file_path, data_key='HT', max_samples=None, normalization_params=None):
@@ -1194,8 +1177,8 @@ class CsiDataset(Dataset):
             self.csi_data = np.array(mat_data[data_key], dtype=np.float32)
             if self.csi_data.ndim == 2: 
                  self.csi_data = np.reshape(self.csi_data, (self.csi_data.shape[0], 2, 32, 32))
-        except: 
-            print("⚠️ Warning: Data file not found. Using dummy data.")
+        except:
+            print("[WARN] Data file not found. Using dummy data.")
             self.csi_data = np.random.randn(100, 2, 32, 32).astype(np.float32)
 
         if normalization_params is None:
@@ -1233,11 +1216,11 @@ def calculate_nmse_db(orig, rec, params):
     return 10 * torch.log10(nmse) if nmse.item() > 1e-10 else torch.tensor(-100.0)
 
 # =========================================================
-# ✅ [1] SRP-MPQ Optimization Logic (Top-K & KL-Divergence)
+# [1] RP-MPQ Offline: Policy Set Construction (Section IV)
 # =========================================================
 
 def quantize_int_asym(w, bits):
-    """Helper for internal usage in apply_mp_policy"""
+    """Helper for internal usage in apply_precision_policy"""
     q_min, q_max = -(2**(bits-1)), (2**(bits-1))-1
     w_min, w_max = w.min(), w.max()
     if w_max == w_min: return w
@@ -1247,10 +1230,8 @@ def quantize_int_asym(w, bits):
     w_q = torch.clamp(w_q, q_min, q_max)
     return (w_q - zp) * scale
 
-def apply_mp_policy(model, policy, device=None):
-    """
-    [Debug Version] FC 레이어 비트 할당 현황을 생중계합니다.
-    """
+def apply_precision_policy(model, policy, device=None):
+    """Apply mixed-precision quantization policy pi to encoder weights (Section IV-A)"""
     import torch
     import torch.nn as nn
     import re
@@ -1258,14 +1239,14 @@ def apply_mp_policy(model, policy, device=None):
     real_model = model.module if isinstance(model, nn.DataParallel) else model
     model_map = {}
     
-    # 모델 매핑
+    # Model layer mapping
     for name, module in real_model.encoder.named_modules():
         if hasattr(module, 'weight') and module.weight is not None:
             clean_name = name.replace("encoder.", "").replace("module.", "")
             model_map[clean_name] = module
             model_map[name] = module
 
-    # 정책 그룹화
+    # Group policy entries (handle split FC layers)
     policy_groups = {}
     for p_key, bits in policy.items():
         clean_key = p_key.replace("encoder.", "").replace("module.", "").replace(".weight", "")
@@ -1280,7 +1261,7 @@ def apply_mp_policy(model, policy, device=None):
 
     applied_count = 0
     
-    # 적용 루프
+    # Apply quantization
     for base_name, bits_info in policy_groups.items():
         target_module = model_map.get(base_name)
         if target_module is None:
@@ -1292,9 +1273,7 @@ def apply_mp_policy(model, policy, device=None):
 
         w = target_module.weight.data
         
-        # ---------------------------------------------------------------
-        # 🚨 [DEBUG] FC 레이어를 만났을 때 비트 할당 내역 출력
-        # ---------------------------------------------------------------
+        # Split FC layer quantization
         if isinstance(bits_info, dict) and 'fc' in base_name:
             sorted_indices = sorted(bits_info.keys())
             max_idx = max(sorted_indices)
@@ -1302,9 +1281,9 @@ def apply_mp_policy(model, policy, device=None):
             w_chunks = torch.chunk(w, total_chunks, dim=0)
             quantized_chunks = []
             
-            # 첫 3개 청크만 샘플로 로그 출력
+            # Log only the first 3 chunks as samples
             for i, chunk in enumerate(w_chunks):
-                b = bits_info.get(i, 32) # <--- 여기가 의심 지점
+                b = bits_info.get(i, 32)
                 if b < 32:
                     q_chunk = quantize_int_asym(chunk, b)
                     quantized_chunks.append(q_chunk)
@@ -1313,7 +1292,7 @@ def apply_mp_policy(model, policy, device=None):
             
             target_module.weight.data = torch.cat(quantized_chunks, dim=0)
 
-        # 일반 레이어
+        # Standard layer (single bit-width)
         else:
             bit = bits_info
             if bit < 32:
@@ -1321,41 +1300,43 @@ def apply_mp_policy(model, policy, device=None):
         
         applied_count += 1        
 
-def restore_model_weights(model, original_weights):
-    """모델 가중치를 원본 FP32 상태로 복구"""
+def restore_fp32_weights(model, original_weights):
+    """Restore encoder weights to FP32 reference state"""
     real_model = model.module if isinstance(model, nn.DataParallel) else model
     with torch.no_grad():
         for name, param in real_model.encoder.named_parameters():
             if name in original_weights:
                 param.data = original_weights[name].to(param.device)
 
-class ILP_MixedPrecisionSolver:
+class ILPCoarseCandidateGenerator:
+    """ILP-based coarse candidate generation (Section IV-C)"""
     def __init__(self, hawq_df, layer_params, act_bits=16):
         self.df = hawq_df
         self.layer_params = layer_params
         self.act_bits = act_bits
         self.bit_options = [16, 8, 4, 2]
-        self.total_bops_fp32 = sum(p * 32 * 32 for p in layer_params.values())
+        self.bops_fp32_baseline = sum(p * 32 * 32 for p in layer_params.values())
 
     def solve_top_k(self, target_savings_pct, top_k=20):
+        """Generate top-k candidate policies via ILP (Section IV-C)"""
         prob = pulp.LpProblem("MP_TopK_Search", pulp.LpMinimize)
         layers = self.df['Layer'].tolist()
         choices = pulp.LpVariable.dicts("x", (layers, self.bit_options), cat=pulp.LpBinary)
-        
-        # 1. Objective: Minimize Sum(Omega)
+
+        # 1. Objective: Minimize total Omega (Hessian-weighted distortion)
         objective_terms = []
         for name in layers:
             row = self.df[self.df['Layer'] == name].iloc[0]
             for b in self.bit_options:
                 objective_terms.append(choices[name][b] * row[f'Omg_INT{b}'])
         prob += pulp.lpSum(objective_terms)
-        
-        # 2. Constraint C1: Unique Selection
+
+        # 2. Constraint C1: Unique bit-width selection per layer
         for name in layers:
             prob += pulp.lpSum([choices[name][b] for b in self.bit_options]) == 1
-            
-        # 3. Constraint C2: BOPs Limit
-        target_limit = self.total_bops_fp32 * (1 - target_savings_pct / 100.0)
+
+        # 3. Constraint C2: UE encoder BOPs budget (Eq.28)
+        target_limit = self.bops_fp32_baseline * (1 - target_savings_pct / 100.0)
         cost_terms = []
         for name in layers:
             params = self.layer_params.get(name, 0)
@@ -1364,36 +1345,37 @@ class ILP_MixedPrecisionSolver:
         prob += pulp.lpSum(cost_terms) <= target_limit
 
         solutions = []
-        
+
         for k in range(top_k):
             prob.solve(pulp.PULP_CBC_CMD(msg=0))
-            if pulp.LpStatus[prob.status] != 'Optimal': break 
+            if pulp.LpStatus[prob.status] != 'Optimal': break
 
             selected_policy = {}
-            selected_vars = [] 
-            current_omega = pulp.value(prob.objective)
-            total_bits_cost = 0
+            selected_vars = []
+            total_omega = pulp.value(prob.objective)
+            encoder_bops = 0
 
             for name in layers:
                 for b in self.bit_options:
                     if pulp.value(choices[name][b]) == 1:
                         selected_policy[name] = b
                         selected_vars.append(choices[name][b])
-                        total_bits_cost += self.layer_params[name] * b * self.act_bits
-            
-            actual_saving = (1 - (total_bits_cost / self.total_bops_fp32)) * 100
+                        encoder_bops += self.layer_params[name] * b * self.act_bits
+
+            actual_saving = (1 - (encoder_bops / self.bops_fp32_baseline)) * 100
             solutions.append({
                 "Policy": selected_policy,
                 "Actual_Saving": actual_saving,
-                "Total_Omega": current_omega
+                "Total_Omega": total_omega
             })
-            
-            # Integer Cut (Constraint to avoid same solution)
+
+            # Integer cut to exclude current solution
             prob += pulp.lpSum(selected_vars) <= len(layers) - 1
-            
+
         return solutions
 
-def evaluate_candidates_kl(model, candidates, loader, device, loss_fn, nmse_params):
+def kl_distributional_refinement(model, candidates, loader, device, loss_fn, nmse_params):
+    """KL-divergence based distributional refinement among ILP candidates (Section IV-D)"""
     real_model = model.module if isinstance(model, nn.DataParallel) else model
     original_weights = {name: p.clone().detach().cpu() for name, p in real_model.encoder.named_parameters()}
     
@@ -1415,7 +1397,7 @@ def evaluate_candidates_kl(model, candidates, loader, device, loss_fn, nmse_para
 
     # 2. Evaluate Candidates (KL)
     for idx, cand in enumerate(candidates):
-        apply_mp_policy(model, cand['Policy'], device)
+        apply_precision_policy(model, cand['Policy'], device)
         
         current_kl = 0.0
         with torch.no_grad():
@@ -1431,13 +1413,13 @@ def evaluate_candidates_kl(model, candidates, loader, device, loss_fn, nmse_para
             best_kl_val = current_kl
             best_candidate_idx = idx
             
-        restore_model_weights(model, original_weights)
+        restore_fp32_weights(model, original_weights)
 
     # 3. NMSE Check
     def get_nmse(policy_dict):
-        apply_mp_policy(model, policy_dict, device)
+        apply_precision_policy(model, policy_dict, device)
         val_nmse = test_epoch_ae(0, loader, model, loss_fn, None, nmse_params, device, verbose=False)
-        restore_model_weights(model, original_weights)
+        restore_fp32_weights(model, original_weights)
         return val_nmse
 
     ilp_best_cand = candidates[0]              
@@ -1450,11 +1432,11 @@ def evaluate_candidates_kl(model, candidates, loader, device, loss_fn, nmse_para
     kl_best_cand['NMSE_ILP'] = nmse_ilp
     return kl_best_cand
     
-def generate_mp_lut_unified(model, loader, hawq_df, layer_params, args, device, norm_params):
+def construct_offline_policy_set(model, loader, hawq_df, layer_params, args, device, norm_params):
     """
-    [Unified Offline Search & Data Collection]
-    1. Stage 1: 파레토 최적 정책(LUT) 탐색 및 실측 (ILP vs KL 비교 가능)
-    2. Stage 2: f(S, B) 수식 피팅용 Raw 데이터(1,000 샘플) 수집
+    [RP-MPQ Offline] Policy Set Construction Pi_C (Section IV)
+    Stage 1: Pareto-optimal policy search via ILP + KL refinement
+    Stage 2: Calibration data collection (1000 samples) for online stage
     """
     import pandas as pd
     import numpy as np
@@ -1462,44 +1444,42 @@ def generate_mp_lut_unified(model, loader, hawq_df, layer_params, args, device, 
     from torch.utils.data import DataLoader, Subset
     import os
 
-    # --- [1. 준비 단계] ---
-    solver = ILP_MixedPrecisionSolver(hawq_df, layer_params, args.act_quant)
-    targets = np.arange(85.0, 95.01, 0.1) # 0.1% Step
+    # --- [1. Setup] ---
+    solver = ILPCoarseCandidateGenerator(hawq_df, layer_params, args.act_quant)
+    targets = np.arange(75.0, 95.1, 0.5) # 0.5% Step
     targets = [round(x, 1) for x in targets]
 
-    # 모든 샘플의 Sparsity(S) 사전 확보
-    _, all_sparsity = get_sparsity_bins_fixed(loader.dataset, device)
+    # Pre-compute Hoyer's sparsity for all samples
+    _, all_sparsity = compute_hoyer_sparsity_bins(loader.dataset, device)
     
-    lut_results = []       # Stage 1: LUT CSV 저장용
-    raw_fitting_data = []  # Stage 2: 수식 피팅용 Raw 데이터 저장용
+    lut_results = []        # Stage 1: Pareto LUT
+    calibration_data = []   # Stage 2: Calibration data for online stage
     
     real_model = model.module if isinstance(model, nn.DataParallel) else model
     original_state = {k: v.clone().cpu() for k, v in real_model.state_dict().items()}
     min_v, range_v = norm_params
 
-    # 통계적 대표성을 위한 1,000개 고정 샘플 로더
+    # Fixed 1000-sample loader for statistical calibration
     fit_indices = np.linspace(0, len(loader.dataset)-1, 1000, dtype=int)
     fit_loader = DataLoader(Subset(loader.dataset, fit_indices), batch_size=args.test_batch_size, shuffle=False)
 
-    print(f"\n🚀 [Unified Search] Range: 85-95% | Step: 0.5% | Points: {len(targets)}")
+    print(f"\n[INFO] Offline Policy Search: Range 75-95% | Step 0.5% | Points: {len(targets)}")
 
-    # --- [2. 탐색 및 데이터 수집 루프] ---
-    for target_b in tqdm(targets, desc="Scanning Pareto & Fitting Data"):
-        # (1) ILP 최적 후보 탐색 (Top-3)
+    # --- [2. Search & Calibration Loop] ---
+    for target_b in tqdm(targets, desc="Scanning Pareto & Calibration"):
+        # (1) ILP top-k candidate generation (Section IV-C)
         candidates = solver.solve_top_k(target_b, top_k=10)
         if not candidates: continue
         
-        # (2) KL 기반 최적 정책 확정 및 실측 (dB)
-        # 반환값: {'Policy': ..., 'NMSE_KL': dB_val, 'NMSE_ILP': dB_val, 'Actual_Saving': ...}
-        best_entry = evaluate_candidates_kl(model, candidates, loader, device, NMSELoss(), norm_params)
+        # (2) KL distributional refinement (Section IV-D)
+        best_entry = kl_distributional_refinement(model, candidates, loader, device, NMSELoss(), norm_params)
         
         policy = best_entry['Policy']
-        actual_b = best_entry['Actual_Saving'] / 100.0  # B (0.0 ~ 1.0)
-        
-        # (3) 수식 피팅(Stage 2)을 위한 개별 샘플 NMSE 실측 (Linear domain)
-        # KL이 최종 선택한 최적 정책(best_entry['Policy'])을 적용합니다.
+        actual_b = best_entry['Actual_Saving'] / 100.0
+
+        # (3) Per-sample NMSE measurement for calibration (linear domain)
         real_model.load_state_dict(original_state)
-        apply_mp_policy(real_model, policy, device)
+        apply_precision_policy(real_model, policy, device)
         real_model.eval()
         
         policy_nmses_linear = []
@@ -1517,20 +1497,20 @@ def generate_mp_lut_unified(model, loader, hawq_df, layer_params, args, device, 
                 nmse_l = (mse / (pow_orig + 1e-8)).cpu().numpy()
                 policy_nmses_linear.extend(nmse_l)
 
-        # (4) 결과 취합 (논리 교정: evaluate_candidates_kl의 결과 직접 참조)
+        # (4) Record results
         lut_results.append({
             "Target_Saving": target_b,
             "Actual_Saving": best_entry['Actual_Saving'],
-            "NMSE_KL": best_entry['NMSE_KL'],    # KL 최적 정책의 실측치 (dB)
-            "NMSE_ILP": best_entry['NMSE_ILP'],  # ILP 1순위 정책의 실측치 (dB)
+            "NMSE_KL": best_entry['NMSE_KL'],
+            "NMSE_ILP": best_entry['NMSE_ILP'],
             "Policy": policy,
             "Summary": {b: list(policy.values()).count(b) for b in [16, 8, 4, 2]}
         })
 
-        # S-B-NMSE 수식 피팅을 위한 개별 데이터 (1,000개)
+        # Per-sample calibration data (1000 samples)
         for i in range(len(policy_nmses_linear)):
             g_idx = fit_indices[i]
-            raw_fitting_data.append({
+            calibration_data.append({
                 "S": all_sparsity[g_idx],
                 "B": actual_b,
                 "NMSE_linear": policy_nmses_linear[i]
@@ -1538,10 +1518,10 @@ def generate_mp_lut_unified(model, loader, hawq_df, layer_params, args, device, 
         
         real_model.load_state_dict(original_state)
 
-    # --- [3. 후처리: Pareto Smoothing] ---
+    # --- [3. Post-processing: Pareto Smoothing] ---
     df_lut = pd.DataFrame(lut_results).sort_values(by='Actual_Saving')
     
-    # NMSE_KL과 NMSE_ILP 모두 단조 증가하도록 스무딩 적용
+    # Monotonic smoothing for both (fair comparison)
     for col in ['NMSE_KL', 'NMSE_ILP']:
         vals = df_lut[col].tolist()
         pruned = []
@@ -1552,24 +1532,24 @@ def generate_mp_lut_unified(model, loader, hawq_df, layer_params, args, device, 
             pruned.append(current_best)
         df_lut[col] = pruned[::-1]
 
-    # --- [4. 최종 저장] ---
-    df_lut.to_csv(f"mp_policy_lut_{args.encoder}_pruned.csv", index=False)
-    pd.DataFrame(raw_fitting_data).to_csv(f"fitting_raw_data_{args.encoder}.csv", index=False)
-    
-    print(f"\n✅ [Complete] Pareto LUT (ILP/KL) & Fitting Data saved.")
+    # --- [4. Save Results] ---
+    df_lut.to_csv(os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}_pruned.csv"), index=False)
+    pd.DataFrame(calibration_data).to_csv(os.path.join(RESULTS_CSV, f"fitting_raw_data_{args.encoder}.csv"), index=False)
+
+    print(f"\n[INFO] Offline policy set + calibration data saved.")
     return lut_results
     
 import torch
 import numpy as np
 def calculate_su_miso_rate_mrt(h_true, h_hat, snr_db, device):
     """
-    [Journal-Ready] FFT 기반 SU-MISO Rate 계산
-    
+    FFT-based SU-MISO Rate Calculation (Section VI-A)
+
     Pipeline:
     1. Delay Domain CSI (Tap) -> FFT -> Frequency Domain CSI (Subcarrier)
-    2. Subcarrier별 MRT Precoding 수행
-    3. 주파수 영역에서 Rate 계산 후 평균 (Average Spectral Efficiency)
-    
+    2. Per-subcarrier MRT Precoding
+    3. Frequency-domain rate computation -> average (Average Spectral Efficiency)
+
     Args:
         h_true: (Batch, 2, 32, 32) - (Real/Imag, Angular(Tx), Delay(Tap))
         h_hat:  (Batch, 2, 32, 32) - Quantized Estimated Channel
@@ -1577,30 +1557,26 @@ def calculate_su_miso_rate_mrt(h_true, h_hat, snr_db, device):
     import torch
     import torch.fft
 
-    # 1. Complex 변환 (Batch, 2, Nt, L) -> (Batch, Nt, L)
+    # 1. Convert to complex: (Batch, 2, Nt, L) -> (Batch, Nt, L)
     if h_true.shape[1] == 2:
         h_true_c = torch.complex(h_true[:, 0, ...], h_true[:, 1, ...])
         h_hat_c  = torch.complex(h_hat[:, 0, ...], h_hat[:, 1, ...])
     else:
         h_true_c, h_hat_c = h_true, h_hat
 
-    # 차원 확인: (Batch, Angular/Tx, Delay/Tap)
-    # 32x32 중 어느 것이 Tx이고 Delay인지 확인 필요하지만, 
-    # 보통 논문에서 (Angular, Delay) 순서로 씁니다.
-    # 즉, dim=1: Tx Antennas (32), dim=2: Delay Taps (32)
-    
-    # 2. [핵심] FFT: Delay Domain -> Frequency Domain
-    # Delay 축(dim=2)에 대해 FFT를 수행합니다.
-    # 결과: (Batch, Tx, Subcarriers)
-    # norm='ortho'를 쓰면 에너지 스케일링이 보존되지만, 통신에서는 보통 안 씁니다.
-    # 대신 나중에 Power Normalization으로 맞춥니다.
+    # Shape: (Batch, Angular/Tx, Delay/Tap)
+    # Convention: dim=1 -> Tx Antennas (32), dim=2 -> Delay Taps (32)
+
+    # 2. FFT: Delay Domain -> Frequency Domain
+    # Apply FFT along delay axis (dim=2) -> (Batch, Tx, Subcarriers)
+    # Power normalization applied later instead of norm='ortho'
     
     H_true_freq = torch.fft.fft(h_true_c, dim=-1) # (B, 32, 32)
     H_hat_freq  = torch.fft.fft(h_hat_c,  dim=-1) # (B, 32, 32)
     
-    # 이제부터 32는 Delay Tap이 아니라 'Subcarrier(k)' 입니다.
-    # 계산 편의를 위해 (Batch * Subcarrier, 1, Tx) 형태로 변환합니다.
-    # 즉, 모든 서브캐리어를 독립적인 MISO 채널로 취급합니다.
+    # After FFT, dim=2 represents Subcarrier(k), not Delay Tap.
+    # Reshape to (Batch * Subcarrier, 1, Tx) to treat each subcarrier
+    # as an independent MISO channel.
     
     B, Nt, K = H_true_freq.shape
     
@@ -1610,7 +1586,7 @@ def calculate_su_miso_rate_mrt(h_true, h_hat, snr_db, device):
     H_hat_flat  = H_hat_freq.permute(0, 2, 1).reshape(-1, 1, Nt)
 
     # 3. Subcarrier-wise MRT Precoding
-    # 각 주파수(k)에서 추정된 채널(H_hat)로 빔을 만듭니다.
+    # Beamform using estimated channel H_hat at each frequency k
     # w = H_hat^H / |H_hat|
     
     w_precoder = H_hat_flat.conj().mT # (Total, 32, 1)
@@ -1621,7 +1597,7 @@ def calculate_su_miso_rate_mrt(h_true, h_hat, snr_db, device):
 
     # 4. Effective Channel (in Frequency Domain)
     # y = H_true(k) * w(k)
-    # 주파수 선택적 페이딩(Frequency Selective Fading)이 반영됨
+    # Captures frequency-selective fading
     h_eff = torch.matmul(H_true_flat, w_precoder) # (Total, 1, 1)
     
     # 5. Rate Calculation
@@ -1632,14 +1608,14 @@ def calculate_su_miso_rate_mrt(h_true, h_hat, snr_db, device):
     rates_per_subcarrier = torch.log2(1 + snr_linear * signal_power) # (B * K,)
     
     # 6. Average Spectral Efficiency
-    # 배치별로 평균 (서브캐리어 평균)
+    # Average over subcarriers per batch sample
     # (B * K,) -> (B, K) -> mean(dim=1) -> (B,)
     rates = rates_per_subcarrier.view(B, K).mean(dim=1)
     
     return rates
     
     
-# ✅ [3] Quantization Functions (Weight / Feedback)
+# [3] Weight & Feedback Quantization
 # =========================================================
 def quantize_tensor(w, bits, q_type='asym'):
     if q_type == 'sym': 
@@ -1662,7 +1638,7 @@ def quantize_feedback_torch(y, bits):
 
 def apply_weight_quantization(model, mode, q_type, hybrid=False, hybrid_strategy='step'):
     if mode == 'FP32': return 0, 0
-    print(f"\n⚡ Applying PTQ: {mode} ({q_type}) | Hybrid: {hybrid}")
+    print(f"\n[INFO] Applying PTQ: {mode} ({q_type}) | Hybrid: {hybrid}")
     
     target_modules = (nn.Conv2d, nn.Linear, nn.Conv1d)
     count_base, count_protected = 0, 0
@@ -1693,9 +1669,9 @@ def apply_weight_quantization(model, mode, q_type, hybrid=False, hybrid_strategy
     return count_base, count_protected
 
 # =========================================================
-# ✅ [4] HAWQ Analyzer (Block-wise Split Support)
+# [4] Hessian Sensitivity Analysis (Section IV-B)
 # =========================================================
-class HAWQAnalyzer:
+class HessianSensitivityAnalyzer:
     def __init__(self, model, loader, loss_fn, device):
         self.model = model
         self.loader = loader
@@ -1711,9 +1687,10 @@ class HAWQAnalyzer:
         return params, grads
 
     def compute_importance(self, bit_widths=[16, 8, 4, 2], split_threshold=20000, num_chunks=32):
+        """Compute Hessian-weighted importance Omega per layer/block (Section IV-B)"""
         print("\n" + "="*120)
-        print(f"⚖️  [HAWQ Analysis] Computing Omega with Block-wise Splitting")
-        print(f"    Target: Layers > {split_threshold} params will be split into {num_chunks} blocks.")
+        print(f"[INFO] Hessian Sensitivity Analysis: Computing Omega with block-wise splitting")
+        print(f"       Layers > {split_threshold} params split into {num_chunks} blocks.")
         print("="*120)
         
         real_model = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
@@ -1770,7 +1747,7 @@ class HAWQAnalyzer:
             sort_key = f"Omg_INT{min(bit_widths)}"
             df = df.sort_values(by=sort_key, ascending=False).reset_index(drop=True)
             
-            print("\n📊 [Layer Importance Table (Top 10 Chunks)]")
+            print("\n[INFO] Layer Importance Table (Top 10 Chunks)")
             display_df = df.copy()
             display_df['Trace(H)'] = display_df['Trace(H)'].map('{:.2e}'.format)
             for b in bit_widths:
@@ -1780,19 +1757,19 @@ class HAWQAnalyzer:
 
             print(display_df.head(10).to_string(index=False))
             
-            csv_path = f"hawq_importance_split.csv"
+            csv_path = os.path.join(RESULTS_CSV, "hawq_importance_split.csv")
             df.to_csv(csv_path, index=False)
-            print(f"\n💾 Results saved to: {csv_path}")
+            print(f"\n[INFO] Results saved to: {csv_path}")
 
 # =========================================================
-# ✅ [5] ONNX Benchmark Helper
+# [5] ONNX Benchmark
 # =========================================================
 def run_onnx_benchmark(model, args, input_shape=(1, 2, 32, 32)):
-    if not HAS_ONNX: 
-        print("⚠️ onnx or onnxruntime not installed. Skipping benchmark."); return
+    if not HAS_ONNX:
+        print("[WARN] onnx or onnxruntime not installed. Skipping benchmark."); return
 
     print("\n" + "="*80)
-    print("🚀 [ONNX Benchmark] Attempting Mamba Export (Experimental)")
+    print("[INFO] ONNX Benchmark: Attempting Mamba Export (Experimental)")
     print("="*80)
 
     os.makedirs("onnx_models", exist_ok=True)
@@ -1819,14 +1796,14 @@ def run_onnx_benchmark(model, args, input_shape=(1, 2, 32, 32)):
             dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
         )
     except Exception as e:
-        print(f"❌ Export Failed: {e}"); return
+        print(f"[ERROR] Export Failed: {e}"); return
     finally:
         if original_ss_fn: ssi.selective_scan_fn = original_ss_fn
 
     try:
         quantize_dynamic(fp32_path, int8_path, weight_type=QuantType.QUInt8)
     except Exception as e:
-        print(f"⚠️ Quantization Failed: {e}")
+        print(f"[WARN] Quantization Failed: {e}")
 
     def bench_ort(path, name):
         if not os.path.exists(path): return 0.0
@@ -1843,14 +1820,14 @@ def run_onnx_benchmark(model, args, input_shape=(1, 2, 32, 32)):
             session.run(None, {input_name: dummy_input.numpy()})
             latencies.append((time.time() - start) * 1000)
         avg_lat = sum(latencies) / len(latencies)
-        print(f"    👉 [{name}] Average Latency: {avg_lat:.4f} ms")
+        print(f"    [{name}] Average Latency: {avg_lat:.4f} ms")
         return avg_lat
 
     bench_ort(fp32_path, "ONNX FP32")
     bench_ort(int8_path, "ONNX INT8")
 
 # =========================================================
-# ✅ [6] Main Training/Testing Logic
+# [6] Training & Evaluation Pipeline
 # =========================================================
 def measure_latency(model, input_tensor, runs=100):
     model.eval()
@@ -1937,111 +1914,110 @@ def inspect_layer_names(model, lut_path):
     import torch.nn as nn
 
     print("\n" + "="*80)
-    print("🔎 [NAME INSPECTION] 레이어 이름 직접 비교 (Raw Data)")
+    print("[INFO] Layer Name Inspection (raw comparison)")
     print("="*80)
 
-    # 1. 실제 모델의 레이어 이름 5개 추출
+    # 1. Extract actual model layer names
     real_model = model.module if isinstance(model, nn.DataParallel) else model
     
-    # 가중치가 있는 모듈만 필터링
+    # Filter modules with weights
     model_keys = []
     for name, module in real_model.encoder.named_modules():
         if hasattr(module, 'weight') and module.weight is not None:
             model_keys.append(name)
     
-    print(f"📌 [Real Model Keys] (총 {len(model_keys)}개 중 앞 5개):")
+    print(f"[INFO] Real Model Keys ({len(model_keys)} total):")
     for k in model_keys[:]:
         print(f"   Model: '{k}'")
 
-    # 2. CSV 정책 파일의 키 5개 추출
+    # 2. Extract CSV policy keys
     try:
         df = pd.read_csv(lut_path)
         policy_str = df.iloc[0]['Policy']
         policy = ast.literal_eval(policy_str) if isinstance(policy_str, str) else policy_str
         policy_keys = list(policy.keys())
         
-        print(f"\n📌 [CSV Policy Keys] (총 {len(policy_keys)}개 중 앞 5개):")
+        print(f"\n[INFO] CSV Policy Keys ({len(policy_keys)} total):")
         for k in policy_keys[:]:
             print(f"   Policy: '{k}'")
             
     except Exception as e:
-        print(f"CSV 읽기 실패: {e}")
+        print(f"[ERROR] CSV read failed: {e}")
         return
 
     print("\n" + "="*80)
     
-def plot_and_save_lut(lut, encoder_name):
+def plot_offline_pareto(lut, encoder_name):
     """
     [Exp 1: Offline LUT Accuracy & Pareto Pruning]
-    - 'Actual(%)' 키 명칭 유연하게 대응
-    - NMSE_KL뿐만 아니라 NMSE_ILP도 함께 Monotonic Smoothing 적용
+    - Flexible key name handling for 'Actual(%)'
+    - Monotonic smoothing applied to both NMSE_KL and NMSE_ILP
     """
     import pandas as pd
     import matplotlib.pyplot as plt
     import seaborn as sns
     import numpy as np
 
-    if not lut: 
-        print("⚠️ LUT data is empty. Skipping plot."); return
+    if not lut:
+        print("[WARN] LUT data is empty. Skipping plot."); return
     
-    # 1. 데이터 로드 (오타 수정 및 유연한 키 참조)
+    # 1. Data load (flexible key references)
     lut_df = pd.DataFrame([{
         "Target_Saving": e.get('Target(%)', e.get('Target_Saving', 0)),
         "Actual_Saving": e.get('Actual(%)', e.get('Actual_Saving', 0)),
-        "NMSE_ILP": e.get('NMSE_ILP', 0), # ✅ ILP 예측치 로드
-        "NMSE_KL": e.get('NMSE_KL', e.get('NMSE(dB)', 0)), # ✅ KL 실측치 로드
+        "NMSE_ILP": e.get('NMSE_ILP', 0),
+        "NMSE_KL": e.get('NMSE_KL', e.get('NMSE(dB)', 0)),
         "Policy": e.get('Policy', {}),
         **{f"INT{b}": e.get('Summary', {}).get(b, 0) for b in [16, 8, 4, 2]}
     } for e in lut])
     
-    # Actual_Saving(BOPs Saving) 기준으로 정렬
+    # Sort by Actual_Saving (BOPs Saving)
     lut_df = lut_df.sort_values(by="Actual_Saving").reset_index(drop=True)
 
-    # 2. Pareto Frontier Smoothing (ILP와 KL 모두 적용)
-    # 뒤(높은 Saving)에서부터 앞으로 오며 성능 역전 현상(Spike) 제거
+    # 2. Plot uses RAW data (fair: both unsmoothed, ILP spikes visible)
+    plt.rcParams.update({'font.size': 13, 'font.family': 'serif'})
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+
+    ax.plot(lut_df["Actual_Saving"], lut_df["NMSE_ILP"],
+            'b--s', label='ILP Prediction', alpha=0.7, markersize=5, linewidth=1.5)
+    ax.plot(lut_df["Actual_Saving"], lut_df["NMSE_KL"],
+            'r-o', label='KL-Refined', linewidth=2, markersize=5)
+
+    ax.set_xlabel("BOPs Saving (%)")
+    ax.set_ylabel("NMSE (dB)")
+    ax.grid(True, linestyle='--', alpha=0.4)
+    ax.legend(fontsize=12)
+    fig.tight_layout()
+
+    fig.savefig(os.path.join(RESULTS_PLOT, f"exp1_pareto_accuracy_{encoder_name}.png"), dpi=300)
+    fig.savefig(os.path.join(FIGURES_DIR, "kl_vs_ilp.pdf"), dpi=300)
+    plt.show()
+
+    # 3. Monotonic smoothing for LUT CSV (used by online stage)
     for col in ['NMSE_KL', 'NMSE_ILP']:
         vals = lut_df[col].tolist()
         pruned = []
         current_best = float('inf')
-        
         for i in range(len(vals)-1, -1, -1):
             if vals[i] < current_best:
                 current_best = val = vals[i]
             pruned.append(current_best)
-        
-        lut_df[col] = pruned[::-1] # ✅ 스무딩된 값으로 업데이트
+        lut_df[col] = pruned[::-1]
 
-    # 3. 그래프 시각화 (이미지 스타일 재현)
-    plt.figure(figsize=(12, 7))
-    # 파란색 점선: 이제 스무딩되어 매끄럽게 출력됩니다.
-    plt.plot(lut_df["Actual_Saving"], lut_df["NMSE_ILP"], 'b--s', label='Linear (ILP) Prediction', alpha=0.6, markersize=4)
-    # 빨간색 실선: KL 실측 파레토 선
-    plt.plot(lut_df["Actual_Saving"], lut_df["NMSE_KL"], 'r-o', label='KL (Pruned Pareto)', linewidth=2, markersize=5)
-
-    plt.title(f"Exp 1: Offline LUT Accuracy - {encoder_name}")
-    plt.xlabel("Target BOPs Saving (%)")
-    plt.ylabel("NMSE (dB)")
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.legend()
-    plt.tight_layout()
-    
-    plt.savefig(f"exp1_pareto_accuracy_{encoder_name}.png", dpi=300)
-    plt.show()
-
-    # 4. 최종 저장
-    output_file = f"mp_policy_lut_{encoder_name}_pruned.csv"
+    # 4. Save smoothed LUT
+    output_file = os.path.join(RESULTS_CSV, f"mp_policy_lut_{encoder_name}_pruned.csv")
     lut_df.to_csv(output_file, index=False)
-    print(f"💾 Standardized & Pruned LUT saved to: {output_file}")
+    print(f"[INFO] Pruned LUT saved to: {output_file}")
     
 def main(argv):
     args = parse_args(argv)
     save_dir = f"saved_models/{args.encoder}_{args.decoder}"
     print(f"--- Start: {datetime.now()} ---")
-    print(f"👉 Config: W:[{args.pq}] A:[INT{args.act_quant}] FB:[{args.aq}-bit]")
+    print(f"[INFO] Config: W:[{args.pq}] A:[INT{args.act_quant}] FB:[{args.aq}-bit]")
     print(f"    Hybrid: {args.hybrid} | Chunking: {args.use_chunking}")
 
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
-    print(f"✅ Device: {device.upper()}")
+    print(f"[INFO] Device: {device.upper()}")
 
     try:
         train_set = CsiDataset(args.train_path, args.train_key)
@@ -2049,9 +2025,9 @@ def main(argv):
         train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=(device=='cuda'))
         test_loader = DataLoader(test_set, batch_size=args.test_batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=(device=='cuda'))
     except: 
-        print("❌ Dataset Error"); return
+        print("[ERROR] Dataset loading failed"); return
 
-    # 모델 초기화
+    # Model initialization
     try:
         from MambaAE import MambaAE
         if args.encoder == 'mamba':
@@ -2066,7 +2042,7 @@ def main(argv):
                             encoded_dim=args.encoded_dim, M=args.M).to(device)
             
     except Exception as e:
-        print(f"⚠️ Model Init Warning: {e}. Trying basic ModularAE.")
+        print(f"[WARN] Model Init: {e}. Trying basic ModularAE.")
         from ModularModels import ModularAE
         net = ModularAE(encoder_type=args.encoder, decoder_type=args.decoder,
                         encoded_dim=args.encoded_dim, M=args.M).to(device)
@@ -2078,33 +2054,30 @@ def main(argv):
     if args.checkpoint and os.path.isfile(args.checkpoint):
         try: net.load_state_dict(torch.load(args.checkpoint, map_location=device)["state_dict"], strict=False)
         except: pass
-    elif args.epochs == 0: print("⚠️ No Checkpoint. Evaluating initialized model.")
+    elif args.epochs == 0: print("[WARN] No checkpoint. Evaluating initialized model.")
 
     if device == 'cuda' and torch.cuda.device_count() > 1: net = nn.DataParallel(net)
     real_model = net.module if isinstance(net, nn.DataParallel) else net
 
 
     if args.epochs == 0:
-        # [Option 1] Offline Analysis + Online Sim
-# 🚀 Option 1: Offline Search + Online Simulation
-# 🚀 Option 1: Unified Offline Analysis (Pareto Search + Fitting Data Collection)
+        # Option 1: RP-MPQ Offline Analysis + Online Simulation
         if args.analyze_all:
-            pruned_path = f"mp_policy_lut_{args.encoder}_pruned.csv"
-            fitting_data_path = f"fitting_raw_data_{args.encoder}.csv"
+            pruned_path = os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}_pruned.csv")
+            fitting_data_path = os.path.join(RESULTS_CSV, f"fitting_raw_data_{args.encoder}.csv")
+
+            # --- [Step 1] Acquire HAWQ & Layer Params ---
+            # Load existing HAWQ results (compute if not found)
+            hawq_path = os.path.join(RESULTS_CSV, 'hawq_importance_split.csv')
+            if os.path.exists(hawq_path):
+                hawq_df = pd.read_csv(hawq_path)
+                print(f"[INFO] Loaded existing HAWQ results: {hawq_path}")
+            else:
+                print("\n[INFO] No HAWQ results found. Computing importance...")
+                HessianSensitivityAnalyzer(net, train_loader, mse_loss, device).compute_importance()
+                hawq_df = pd.read_csv(hawq_path)
             
-            # --- [Step 1] HAWQ & Layer Params 확보 ---
-            # HAWQ 결과 로드 (없으면 새로 계산)
-            hawq_files = glob.glob('hawq_importance_split.csv')
-            if hawq_files: 
-                latest_hawq = max(hawq_files, key=os.path.getctime)
-                hawq_df = pd.read_csv(latest_hawq)
-                print(f"📂 Loaded existing HAWQ results: {latest_hawq}")
-            else: 
-                print("\n⚡ No HAWQ results found. Computing importance...")
-                HAWQAnalyzer(net, train_loader, mse_loss, device).compute_importance()
-                hawq_df = pd.read_csv(max(glob.glob('hawq_importance_split.csv'), key=os.path.getctime))
-            
-            # ILP Solver를 위한 레이어별 파라미터 정보 추출
+            # Extract per-layer parameter info for ILP solver
             real_model = net.module if isinstance(net, nn.DataParallel) else net
             l_params = {}
             for n, m in real_model.encoder.named_modules():
@@ -2115,45 +2088,45 @@ def main(argv):
                     else: 
                         l_params[n] = m.weight.numel()
 
-            # --- [Step 2] Unified Search (85-95%, 0.1% Step) ---
-            # LUT(.csv)와 Fitting Raw Data(.csv)가 하나라도 없으면 통합 스캔 실행
+            # --- [Step 2] Unified Search (75-95%, 0.5% Step) ---
+            # Run unified scan if LUT(.csv) or calibration data(.csv) is missing
             if not os.path.exists(pruned_path) or not os.path.exists(fitting_data_path):
-                print(f"\n⚡ Starting Unified Super-Fine Scan...")
-                print(f"   Range: 85.0% - 95.0% | Resolution: 0.1% Step | Sampling: 1,000 per policy")
+                print(f"\n[INFO] Starting unified scan...")
+                print(f"   Range: 75.0% - 95.0% | Resolution: 0.5% Step | Sampling: 1,000 per policy")
                 
-                # 기존 2개 함수 호출을 하나로 통합
-                lut = generate_mp_lut_unified(
+                # Unified call replacing previous two-function workflow
+                lut = construct_offline_policy_set(
                     net, test_loader, hawq_df, l_params, args, device, train_set.normalization_params
                 )
             else:
-                print(f"\n✅ All offline data found (LUT & Fitting Data).")
+                print(f"\n[INFO] All offline data found (LUT & calibration data).")
                 df_existing = pd.read_csv(pruned_path)
                 
-                # Policy 컬럼이 문자열이므로 dict로 복원 (Summary도 필요한 경우 복원)
+                # Restore Policy column from string to dict (also Summary if present)
                 if 'Policy' in df_existing.columns and isinstance(df_existing['Policy'].iloc[0], str):
                     df_existing['Policy'] = df_existing['Policy'].apply(ast.literal_eval)
                 if 'Summary' in df_existing.columns and isinstance(df_existing['Summary'].iloc[0], str):
                     df_existing['Summary'] = df_existing['Summary'].apply(ast.literal_eval)
                 
-                # plot_and_save_lut 함수에 넘겨줄 리스트 형태로 변환
+                # Convert to list of dicts for plot_offline_pareto
                 lut = df_existing.to_dict('records')
 
-            plot_and_save_lut(lut, args.encoder)
-            # --- [Step 3] 결과 시각화 및 검증 (Exp 3) ---
-            # 생성된 mp_policy_lut..._pruned.csv를 읽어 4가지 성능 지표 그래프 생성
-            print("\n📊 Generating Exp 3 Analysis Graphs (Performance, Stability, CDF, Outage)...")
+            plot_offline_pareto(lut, args.encoder)
+            # --- [Step 3] Result visualization & validation (Exp 3) ---
+            # Read generated mp_policy_lut..._pruned.csv and produce 4 performance graphs
+            print("\n[INFO] Generating Exp 3 analysis graphs (Performance, Stability, CDF, Outage)...")
             res_df = run_exp3_sparsity_frontier(net, test_loader, pruned_path, device, train_set.normalization_params, args)
 
             #verify_fc_quantization(net, "mp_policy_lut_mamba_pruned.csv", device)
             #inspect_layer_names(net, pruned_path)
             
-            print("\n📈 [Step 3.5] Running Rigorous Sum-Rate Analysis...")
-            rate_df = run_exp3_5_rate_analysis(net, test_loader, pruned_path, device, train_set.normalization_params, args)
+            print("\n[INFO] Step 3.5: Running rate-outage analysis...")
+            rate_df = run_exp3_5_rate_outage_analysis(net, test_loader, pruned_path, device, train_set.normalization_params, args)
         
-            print("\n🧠 [Step 4] Running RANC (Reliability-Aware Control) Simulation...")
-            ranc_df = run_exp4_ranc_simulation(net, test_loader, pruned_path, device, rate_df, args)
+            print("\n[INFO] Step 4: Running RP-MPQ online simulation...")
+            ranc_df = run_exp4_rp_mpq_online(net, test_loader, pruned_path, device, rate_df, args)
         
-            print(f"\n✨ [Complete] All analysis results for {args.encoder} are ready.")
+            print(f"\n[INFO] All analysis results for {args.encoder} are ready.")
             return
         
 
@@ -2169,35 +2142,33 @@ def main(argv):
         
 
         # ---------------------------------------------------------
-        # [추가됨] FLOPs 측정 코드 (Encoder & Total)
+        # FLOPs Measurement (Encoder & Total)
         # ---------------------------------------------------------
         try:
             from thop import profile
             print("\n" + "="*60)
-            print("🧮 [FLOPs Measurement]")
+            print("[INFO] FLOPs Measurement")
             
-            # 1. 더미 입력 (Latency 측정 때 쓴 것과 동일한 shape 사용)
-            # 보통 배치 사이즈 1 기준으로 측정합니다.
+            # 1. Dummy input (same shape as latency measurement, batch=1)
             flops_input = torch.randn(1, 2, 32, 32).to(device)
     
-            # 2. Encoder FLOPs 측정
-            # thop는 (model, inputs) 튜플을 받습니다.
+            # 2. Encoder FLOPs (thop takes (model, inputs) tuple)
             macs_enc, params_enc = profile(real_model.encoder, inputs=(flops_input, ), verbose=False)
             
-            # 3. Total (Encoder + Decoder) FLOPs 측정
-            # 전체 모델(net/real_model)을 넣습니다.
+            # 3. Total (Encoder + Decoder) FLOPs
             macs_total, params_total = profile(real_model, inputs=(flops_input, ), verbose=False)
     
-            # 4. 결과 출력 (GFLOPs 단위 변환: / 1e9)
-            # thop은 기본적으로 MACs를 반환하므로, FLOPs는 보통 MACs * 2로 계산하기도 하지만,
-            # 최근 논문들은 MACs 자체를 FLOPs로 표기하거나 GFlops(MACs)로 명시합니다.
+            # 4. Print results (GMACs = MACs / 1e9)
+            # thop returns MACs; recent papers report MACs directly as GFLOPs(MACs)
             print(f" - Encoder MACs:   {macs_enc / 1e9:.4f} G (Giga MACs)")
             print(f" - Total MACs:     {macs_total / 1e9:.4f} G (Giga MACs)")
             print("="*60)
     
         except ImportError:
-            print("⚠️ 'thop' library not installed. Skipping FLOPs measurement.")
+            print("[WARN] 'thop' library not installed. Skipping FLOPs measurement.")
             print("   -> Run '!pip install thop' to enable this.")
+        except Exception as e:
+            print(f"[WARN] FLOPs measurement failed: {e}")
         # ---------------------------------------------------------
 
         # 3. Stats & Logs
@@ -2220,32 +2191,31 @@ def main(argv):
 
         
         # ---------------------------------------------------------
-        # [추가] Absolute BOPs Calculation (Table II와 비교용)
+        # Absolute BOPs Calculation (for Table II comparison)
         # ---------------------------------------------------------
-        # 공식: BOPs = MACs * Weight_Bits * Activation_Bits
-        # (주의: thop으로 구한 macs_enc 변수가 위에서 정의되어 있어야 함)
+        # Formula: BOPs = MACs * Weight_Bits * Activation_Bits (Eq.28)
+        # Requires macs_enc from thop profiling above
         
         if 'macs_enc' in locals():
-            # 현재 설정된 Activation Bit (예: 16)
+            # Current activation bit-width (e.g., 16)
             current_act_bit = args.act_quant if args.act_quant < 32 else 32
             
-            # 1. FP32 기준 BOPs (Baseline)
+            # 1. FP32 Baseline BOPs
             # MACs * 32(Weight) * 32(Act)
             bops_fp32 = macs_enc * 32 * 32
             
-            # 2. 현재 모델 BOPs (Quantized)
-            # MACs * 평균Weight비트 * 설정된Act비트
-            # avg_weight_bits는 코드 윗부분에서 이미 계산되어 있음
+            # 2. Current model BOPs (Quantized)
+            # MACs * avg_weight_bits * act_bits (avg_weight_bits computed above)
             bops_quant = macs_enc * avg_weight_bits * current_act_bit
             
             print("\n" + "="*60)
-            print("🔢 [BOPs Measurement]")
+            print("[INFO] BOPs Measurement")
             print(f" - Config:       W-Avg {avg_weight_bits:.2f} bit | A {current_act_bit} bit")
             print(f" - Encoder FP32: {bops_fp32 / 1e9:.4f} G-BOPs ({bops_fp32 / 1e6:.2f} M-BOPs)")
             print(f" - Encoder Ours: {bops_quant / 1e9:.4f} G-BOPs ({bops_quant / 1e6:.2f} M-BOPs)")
             print("="*60)
         else:
-            print("⚠️ FLOPs(macs_enc) not measured. Cannot calculate BOPs.")
+            print("[WARN] FLOPs(macs_enc) not measured. Cannot calculate BOPs.")
 
         act_bits = args.act_quant if args.act_quant < 32 else 32
         bops_reduction = (1 - ( (avg_weight_bits * act_bits) / (32 * 32) )) * 100
@@ -2255,6 +2225,9 @@ def main(argv):
         print("="*60)
         print(f" - Params:         {params_total:,}")
         print(f" - Avg W-Bit:      {avg_weight_bits:.1f} bits")
+        if 'macs_enc' in locals():
+            print(f" - Enc FLOPs:      {macs_enc / 1e6:.2f} M")
+            print(f" - Total FLOPs:    {macs_total / 1e6:.2f} M")
         print(f" - BOPs Saving:    {bops_reduction:.2f} % (Theoretical)")
         print(f" - NMSE:           {nmse:.2f} dB")
         print(f" - Encoder Time:   {enc_latency:.4f} ms/sample")
@@ -2263,7 +2236,7 @@ def main(argv):
         #run_onnx_benchmark(net, args)
         return
 
-    # 🚀 Train Mode
+    # Train Mode
     if args.save: os.makedirs(save_dir, exist_ok=True)
     best_nmse = float("inf")
     for epoch in range(args.epochs):

@@ -1,0 +1,895 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+% --------------------
+% Packages
+% --------------------
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{textcomp}
+
+% --------------------
+% Notation helpers
+% --------------------
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left| #1 \right|}
+\newcommand{\set}[1]{\left\{ #1 \right\}}
+\newcommand{\given}{\,\mid\,}
+\newcommand{\Given}{\,\middle|\,}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{remark}{Remark}
+\newtheorem{proposition}{Proposition}
+
+\begin{document}
+
+% --------------------
+% Title
+% --------------------
+\title{
+Reliability-Preserving Mixed-Precision Quantization Scheduling for Asymmetric CSI Feedback Autoencoders
+}
+
+% --------------------
+% Authors
+% --------------------
+\author{
+\IEEEauthorblockN{Hyunjae Park and Wan Choi}
+\IEEEauthorblockA{Department of Electrical and Computer Engineering, Seoul National University\\
+Seoul 08826, South Korea\\
+Email: \{hyunjae.park, wanchoi\}@snu.ac.kr}
+}
+
+\maketitle
+
+\begin{abstract}
+In frequency-division duplex (FDD) massive multiple-input multiple-output (MIMO) systems, downlink CSI must be estimated at the user equipment (UE) and fed back to the base station (BS). In practice, UE-side inference is constrained by latency, energy, and compute, making lightweight encoders and low-precision execution unavoidable. Beyond reconstruction metrics such as normalized mean-squared error (NMSE), CSI distortion under UE constraints directly translates into transmission-rate degradation and outage events when the reconstructed CSI is used for precoding and link adaptation. This paper adopts a reliability-oriented view by distinguishing between (i) an \emph{encoder-induced information floor} due to structural distortion and (ii) an \emph{operational degradation} that depends on the CSI realization and arises from mixed-precision execution. To lower the information floor under strict UE budgets, we propose an asymmetric CSI feedback autoencoder that employs a lightweight state-space model (SSM) encoder at the UE and a high-capacity decoder at the BS. Building on this architecture, we develop Reliability-Preserving Mixed-Precision Quantization Scheduling (RP-MPQ): an offline stage constructs a compact set of candidate mixed-precision policies via sensitivity-aware pruning followed by distributional (KL-divergence) refinement, and an online stage selects a policy per CSI realization to minimize a weighted reliability-violation cost under a long-term average UE compute budget. Simulation results demonstrate that the proposed asymmetric architecture improves the accuracy--complexity trade-off and that RP-MPQ substantially reduces rate-based outage events under the same average UE-side budget.
+\end{abstract}
+
+\begin{IEEEkeywords}
+CSI feedback, mixed-precision quantization, reliability, massive MIMO, UE-side inference
+\end{IEEEkeywords}
+
+% =========================================================
+\section{Introduction}
+% =========================================================
+
+\subsection{Background and Motivation}
+In frequency-division duplex (FDD) massive multiple-input multiple-output (MIMO) systems, CSI feedback is essential for downlink precoding and rate adaptation. Unlike time-division duplex systems, FDD operation does not permit channel reciprocity; therefore, the UE must estimate downlink CSI and convey a compressed representation to the BS over a limited feedback link. Recent deep-learning-based CSI feedback methods employ autoencoders to learn compact latent representations that can be quantized and transmitted efficiently \cite{CsiNet,TransNet,ACCsiNet}.
+
+A practical bottleneck is UE-side feasibility at inference time. CSI compression must operate under strict latency and energy constraints, which often forces lightweight encoder architectures and low-precision execution. Under such operation, CSI distortion is unavoidable and its impact is not limited to reconstruction error: distorted CSI directly affects downlink transmission rates and increases outage events when used for precoding and link adaptation \cite{Jindal2006}. This motivates CSI feedback designs that explicitly account for transmission-rate-based reliability, rather than optimizing reconstruction metrics alone.
+
+\subsection{Problem Reframing: Structural Floor vs.\ Operational Degradation}
+We adopt a two-level view of performance degradation under UE constraints.
+
+First, a UE-feasible encoder inevitably discards part of the channel information when compressing high-dimensional CSI into a low-dimensional latent vector, inducing an \emph{encoder-induced information floor}. Second, mixed-precision execution introduces additional \emph{operational degradation} on top of a fixed encoder--decoder structure. Unlike the information floor, this degradation is runtime-dependent and varies across CSI realizations and compute budgets.
+
+This separation is a design abstraction and need not be strictly additive for every realization, but it clarifies a coordinated design pathway under UE constraints: architectural choices aim to lower the information floor, while runtime precision control mitigates operational degradation.
+
+\subsection{Structural Perspective: Asymmetric CSI Feedback Architecture}
+In the delay--angular domain, CSI often exhibits localized energy around dominant propagation paths while retaining non-negligible long-range components due to off-grid effects and finite DFT resolution. Encoders that impose hard locality (e.g., limited receptive fields) may effectively truncate such components under strict budgets and incur irreversible structural loss. In contrast, state-space model (SSM) encoders aggregate inputs through soft memory with exponentially decaying influence, allowing long-range dependencies to be attenuated rather than abruptly truncated. Recent work also highlights opportunities for SSM-style architectures (including Mamba) in wireless communications and networking \cite{Mamba,MambaWireless}.
+
+Motivated by this structural match and the inherent UE--BS computational asymmetry, we propose an asymmetric CSI feedback architecture that places a lightweight SSM-based encoder at the UE and a higher-capacity decoder at the BS. In our implementation, the UE employs a Mamba-style SSM encoder and the BS employs a Transformer-based decoder.
+
+\subsection{Operational Perspective: Reliability-Preserving Mixed-Precision Quantization}
+On top of the fixed asymmetric architecture, we develop Reliability-Preserving Mixed-Precision Quantization Scheduling (RP-MPQ), which enables runtime, reliability-aware precision adaptation with low online complexity.
+
+Offline, RP-MPQ compresses the exponentially large mixed-precision space into a compact set of candidate policies using sensitivity-aware pruning followed by distributional (KL-divergence) refinement. Online, the UE selects a policy per CSI realization to minimize a reliability-violation cost under a Lagrangian relaxation, while satisfying a long-term average UE compute budget.
+
+\subsection{Contributions}
+The main contributions of this paper are:
+\begin{itemize}
+\item A reliability-oriented formulation for UE-constrained CSI feedback that distinguishes an encoder-induced information floor from runtime mixed-precision degradation.
+\item An asymmetric CSI feedback autoencoder using a lightweight SSM-based UE encoder and a high-capacity BS decoder, structurally aligned with delay--angular CSI under strict UE constraints.
+\item RP-MPQ, a two-stage mixed-precision framework that constructs a compact candidate policy set offline and performs lightweight, per-sample reliability-aware policy selection online under a long-term UE compute budget.
+\end{itemize}
+
+\subsection{Organization}
+Section~\ref{sec:system_model} describes the system model and problem formulation. Section~\ref{sec:asym_arch} presents the proposed asymmetric architecture and its structural motivation. Sections~\ref{sec:offline} and~\ref{sec:online} detail the offline policy construction and online reliability-aware selection in RP-MPQ, respectively. Section~\ref{sec:experiments} reports experimental results, followed by concluding remarks in Section~\ref{sec:conclusion}.
+
+% =========================================================
+\section{System Model and Problem Formulation}
+\label{sec:system_model}
+% =========================================================
+
+\subsection{System Model}
+\label{subsec:system_model}
+We consider an FDD massive MIMO downlink system where a BS with $N_t$ transmit antennas serves a UE with $N_r$ receive antennas. Let $\mathbf{H}[n] \in \mathbb{C}^{N_r \times N_t}$ denote the downlink MIMO channel on the $n$-th OFDM subcarrier, $n=0,\ldots,N_f-1$.
+
+Applying an $N_f$-point unitary inverse DFT (IDFT) across the $N_f$ subcarriers yields the delay-domain channel taps
+\begin{equation}
+\mathbf{H}_d[\ell]
+= \frac{1}{\sqrt{N_f}} \sum_{n=0}^{N_f-1} \mathbf{H}[n] e^{j 2\pi n\ell/N_f},
+\quad \ell=0,\ldots,N_f-1.
+\label{eq:delay_idft}
+\end{equation}
+Each tap is mapped to the angular domain using unitary DFT matrices
+\begin{equation}
+\mathbf{X}[\ell] = \mathbf{F}_r \mathbf{H}_d[\ell] \mathbf{F}_t^{\mathsf{H}},
+\label{eq:ang_transform}
+\end{equation}
+where $\mathbf{F}_r \in \mathbb{C}^{N_r \times N_r}$ and $\mathbf{F}_t \in \mathbb{C}^{N_t \times N_t}$ are unitary DFT matrices.
+
+Due to limited delay spread, most energy is concentrated in the first $N_a \le N_f$ delay taps. We retain
+\begin{equation}
+\mathbf{X}_a \triangleq \big[ \mathbf{X}[0], \mathbf{X}[1], \ldots, \mathbf{X}[N_a-1] \big].
+\label{eq:truncate}
+\end{equation}
+
+At the UE, an encoder $f_\theta(\cdot)$ maps $\mathbf{X}_a$ to a latent vector
+\begin{equation}
+\mathbf{z} = f_\theta(\mathbf{X}_a), \quad \mathbf{z}\in\mathbb{R}^{D}, \quad D \ll 2 N_a N_r N_t.
+\label{eq:encoder}
+\end{equation}
+(Complex CSI is represented in a real-valued format, e.g., by stacking real and imaginary parts; we omit this bookkeeping for clarity.)
+
+The compression ratio is defined as
+\begin{equation}
+\mathrm{CR} \triangleq \frac{D}{2 N_a N_r N_t}.
+\label{eq:cr}
+\end{equation}
+
+The latent is quantized and transmitted over the feedback link,
+\begin{equation}
+\tilde{\mathbf{z}} = Q_{\mathrm{fb}}(\mathbf{z}),
+\label{eq:latent_quant}
+\end{equation}
+and the BS reconstructs the truncated CSI as
+\begin{equation}
+\hat{\mathbf{X}}_a = g_\phi(\tilde{\mathbf{z}}).
+\label{eq:decoder}
+\end{equation}
+
+\subsection{UE Constraints and Distortion Sources}
+\label{subsec:constraints}
+In practical deployments, CSI feedback is constrained by UE-side latency, energy, and compute limits, while the BS typically has substantially greater computational resources. This UE--BS asymmetry motivates architectures with a lightweight UE-side encoder and a higher-capacity BS-side decoder.
+
+Under such operation, it is useful to distinguish two distortion sources:
+\begin{itemize}
+\item \textbf{Structural distortion (encoder-induced floor):} distortion due to information discarded when $\mathbf{X}_a$ is compressed into the latent representation $\mathbf{z}$, which induces an encoder-determined performance floor.
+\item \textbf{Operational degradation (precision-induced):} additional distortion due to low-precision/mixed-precision execution of the UE-side encoder at inference time; this degradation is runtime-dependent and varies across CSI realizations and budgets.
+\end{itemize}
+
+\subsection{Design Perspective and Problem Statement}
+\label{subsec:problem_statement}
+We study the joint design of:
+\begin{enumerate}
+\item a UE-feasible asymmetric encoder--decoder architecture that improves the accuracy--complexity trade-off by reducing the encoder-induced structural distortion; and
+\item a runtime-operable mixed-precision scheduling mechanism for the UE-side encoder that suppresses transmission-rate-based reliability violations under a long-term average UE compute budget.
+\end{enumerate}
+Section~\ref{sec:asym_arch} focuses on the structural aspect, and Sections~\ref{sec:offline}--\ref{sec:online} develop the mixed-precision scheduling framework on top of the resulting asymmetric architecture.
+
+% =========================================================
+\section{Asymmetric CSI Feedback Architecture under UE Constraints}
+\label{sec:asym_arch}
+% =========================================================
+
+\subsection{UE--BS Asymmetry and an Encoder-Induced Information Floor}
+\label{subsec:info_floor}
+Let $\mathbf{X}_a$ denote the truncated delay--angular CSI in \eqref{eq:truncate} and define the latent random variable $\mathbf{Z} \triangleq f_\theta(\mathbf{X}_a)$.
+\begin{equation}
+\mathbf{Z} \triangleq f_\theta(\mathbf{X}_a).
+\label{eq:latent_rv}
+\end{equation}
+Given a decoder $g_\phi(\cdot)$, consider the reconstruction MSE
+\begin{equation}
+\mathcal{L}(f_\theta,g_\phi)
+\triangleq
+\E\!\left[\norm{\mathbf{X}_a - g_\phi(\mathbf{Z})}_F^2\right].
+\label{eq:mse_def}
+\end{equation}
+By the orthogonal decomposition property of conditional expectation,
+\eqref{eq:mse_def} admits the exact decomposition
+\begin{align}
+\mathcal{L}(f_\theta,g_\phi)
+&=
+\underbrace{
+\E\!\left[\norm{\mathbf{X}_a - \E[\mathbf{X}_a \given \mathbf{Z}]}_F^2\right]
+}_{\text{encoder-induced information floor}}
+\nonumber\\
+&\quad+
+\underbrace{
+\E\!\left[\norm{\E[\mathbf{X}_a \given \mathbf{Z}] - g_\phi(\mathbf{Z})}_F^2\right]
+}_{\text{decoder refinement error}}.
+\label{eq:mse_decomp}
+\end{align}
+The first term is the minimum achievable distortion under an ideal decoder and depends only on the information preserved in $\mathbf{Z}$. The second term captures approximation error due to a non-ideal decoder and can be reduced by increasing BS-side decoder capacity. This highlights that, under UE constraints, UE encoder design fundamentally limits attainable performance.
+
+\subsection{Long-Tailed Locality of Delay--Angular Domain CSI}
+\label{subsec:longtail}
+In the delay--angular domain, CSI energy is often concentrated around dominant angular components associated with physical propagation paths. However, locality is not strictly compact: off-grid angles represented on a finite DFT basis produce spectral leakage with slowly decaying sidelobes (Dirichlet-type leakage). For a fixed delay tap, let $\{x_i\}$ denote angular-domain coefficients around a dominant index $i_0$. A stylized off-grid leakage pattern can be modeled as an oscillatory long tail:
+\begin{equation}
+x_{i_0+d} \;\approx\; c_0\,\frac{\eta_d}{1+d},
+\qquad
+d \triangleq |i-i_0|\ge 0,
+\label{eq:dirichlet_osc_tail}
+\end{equation}
+where $\eta_d$ is an oscillatory factor satisfying $|\eta_d|\le 1$, and $c_0>0$ absorbs path strength and normalization. In particular, the magnitude envelope obeys
+\begin{equation}
+|x_i|
+\;\lesssim\;
+\frac{c_0}{1+|i-i_0|}.
+\label{eq:longtail_bound}
+\end{equation}
+Thus, distant angular coefficients can remain non-negligible, and strict hard locality may cause irreversible structural loss under tight UE budgets.
+
+\subsection{Hard-Locality Encoding and Structural Truncation Loss}
+\label{subsec:hard_locality}
+Encoders based on CNNs impose finite receptive fields and thus a hard-locality constraint. Let $L$ denote an effective receptive-field radius. Under the envelope in \eqref{eq:longtail_bound}, the residual tail energy beyond radius $L$ satisfies
+\begin{align}
+E_{\mathrm{hard}}(L)
+\triangleq
+\sum_{|i-i_0|>L} |x_i|^2
+\;\lesssim\;
+c_0^2\sum_{d=L+1}^{\infty}\frac{1}{(1+d)^2}
+\;\le\;
+\frac{c_0^2}{1+L}
+=
+\mathcal{O}\!\left(L^{-1}\right),
+\quad d \triangleq |i-i_0|.
+\label{eq:hard_tail}
+\end{align}
+The bound indicates that reducing truncation loss requires substantially increasing $L$ (e.g., deeper/wider CNNs), which increases UE-side compute and latency.
+
+\subsection{Soft-Locality Encoding via State-Space Aggregation}
+\label{subsec:ssm_soft}
+State-space model (SSM) encoders provide soft locality: rather than hard-truncating long-range coefficients, they recursively aggregate inputs with exponentially decaying aggregation weights. A linear time-invariant SSM can be written as
+\begin{equation}
+\mathbf{s}_{k+1}=\mathbf{A}\mathbf{s}_k+\mathbf{B}\mathbf{u}_k,
+\quad
+\mathbf{y}_k=\mathbf{C}\mathbf{s}_k,
+\label{eq:ssm}
+\end{equation}
+which yields the convolutional form
+\begin{equation}
+\mathbf{y}_k=\sum_{d\ge 0}\mathbf{C}\mathbf{A}^{d}\mathbf{B}\mathbf{u}_{k-d}.
+\label{eq:ssm_conv}
+\end{equation}
+If $\mathbf{A}$ is stable, then there exist constants $c_1>0$ and $\alpha>0$ such that $\|\mathbf{A}^{d}\|\le c_1 e^{-\alpha d}$ for all $d\ge 0$.
+To compare hard truncation and soft aggregation on the same footing, define the aggregated tail contribution beyond horizon $L$:
+\begin{equation}
+R_{\mathrm{soft}}(L)
+\triangleq
+\left\|
+\mathbf{C}\sum_{d>L}\mathbf{A}^{d}\mathbf{B}\mathbf{u}_{k-d}
+\right\|.
+\label{eq:soft_contrib_def}
+\end{equation}
+Motivated by Dirichlet-type leakage, we model the input envelope as $\|\mathbf{u}_{k-d}\|\lesssim \frac{c_0}{1+d}$ (up to oscillations as in \eqref{eq:dirichlet_osc_tail}). Then
+\begin{align}
+R_{\mathrm{soft}}(L)
+&\le
+\|\mathbf{C}\|\|\mathbf{B}\|\sum_{d>L}\|\mathbf{A}^{d}\|\,\|\mathbf{u}_{k-d}\|
+\;\lesssim\;
+c_3\sum_{d=L+1}^{\infty}\frac{e^{-\alpha d}}{1+d}
+=
+\mathcal{O}\!\left(\frac{e^{-\alpha L}}{1+L}\right),
+\label{eq:soft_tail_bound}
+\end{align}
+for some constant $c_3>0$. This quantifies that the incremental influence of very distant coefficients is suppressed under exponential aggregation weights, while those coefficients are still retained and recursively aggregated rather than being abruptly truncated.
+
+\begin{remark}[Polynomial envelopes as Laplace mixtures of exponential modes]
+\label{rem:poly_mixture}
+For an integer distance index $d\ge 0$, the prototypical long-tail envelope admits an exact Laplace-mixture representation:
+\begin{equation}
+\frac{1}{d+1}
+=
+\int_{0}^{\infty} e^{-(d+1)\alpha}\,d\alpha
+=
+\int_{0}^{\infty} e^{-\alpha}\, e^{-\alpha d}\,d\alpha.
+\label{eq:inv_mixture}
+\end{equation}
+Thus, a slowly decaying envelope can be interpreted as a continuum mixture of exponentially decaying modes in $d$.
+A finite-dimensional SSM realizes a finite collection of exponential modes (via the eigenstructure of $\mathbf{A}$), providing an architectural prior compatible with long-tailed locality under bounded UE complexity.
+\end{remark}
+
+\subsection{Quantization Robustness of Contractive State-Space Encoders}
+\label{subsec:ssm_quant_robust}
+UE-side inference often requires low-precision execution. Post-training weight quantization can be modeled as a parameter perturbation $\hat{\boldsymbol{\theta}}=\boldsymbol{\theta}+\Delta\boldsymbol{\theta}$ applied to the UE encoder blocks. The following proposition formalizes a stability property: when the state recursion is uniformly contractive, quantization-induced perturbations do not amplify with token length.
+
+\begin{proposition}[Perturbation robustness of contractive state-space updates]
+\label{prop:quant_robust}
+Consider a (selective) state-space encoder block written as
+\begin{equation}
+\mathbf{s}_{t+1}=\Phi_t(\mathbf{s}_t,\mathbf{u}_t;\boldsymbol{\theta}),
+\qquad
+\mathbf{y}_t=\Psi_t(\mathbf{s}_t;\boldsymbol{\theta}),
+\label{eq:ssm_block_general}
+\end{equation}
+and let $\hat{\boldsymbol{\theta}}=\boldsymbol{\theta}+\Delta\boldsymbol{\theta}$ denote quantized parameters. Let $(\hat{\mathbf{s}}_t,\hat{\mathbf{y}}_t)$ be the resulting trajectories under the same inputs and identical initialization $\mathbf{s}_0=\hat{\mathbf{s}}_0$. Assume there exist constants $\rho\in[0,1)$ and $L_{\Phi,\theta}, L_{\Psi}, L_{\Psi,\theta}\ge 0$ such that for all $t$, all $\mathbf{s},\mathbf{s}',\mathbf{u}$,
+\begin{align}
+\norm{\Phi_t(\mathbf{s},\mathbf{u};\boldsymbol{\theta})-\Phi_t(\mathbf{s}',\mathbf{u};\boldsymbol{\theta})}
+&\le \rho\,\norm{\mathbf{s}-\mathbf{s}'},
+\label{eq:contractive_assump}\\
+\norm{\Phi_t(\mathbf{s},\mathbf{u};\boldsymbol{\theta})-\Phi_t(\mathbf{s},\mathbf{u};\hat{\boldsymbol{\theta}})}
+&\le L_{\Phi,\theta}\,\norm{\Delta\boldsymbol{\theta}},
+\label{eq:phi_theta_lip}\\
+\norm{\Psi_t(\mathbf{s};\boldsymbol{\theta})-\Psi_t(\mathbf{s}';\boldsymbol{\theta})}
+&\le L_{\Psi}\,\norm{\mathbf{s}-\mathbf{s}'},
+\label{eq:psi_state_lip}\\
+\norm{\Psi_t(\mathbf{s};\boldsymbol{\theta})-\Psi_t(\mathbf{s};\hat{\boldsymbol{\theta}})}
+&\le L_{\Psi,\theta}\,\norm{\Delta\boldsymbol{\theta}}.
+\label{eq:psi_theta_lip}
+\end{align}
+Then the output deviation is uniformly bounded for all $t$ as
+\begin{equation}
+\norm{\mathbf{y}_t-\hat{\mathbf{y}}_t}
+\le
+\left(\frac{L_{\Psi}L_{\Phi,\theta}}{1-\rho}+L_{\Psi,\theta}\right)\norm{\Delta\boldsymbol{\theta}}.
+\label{eq:ssm_quant_bound}
+\end{equation}
+\end{proposition}
+
+\begin{IEEEproof}
+Define $e_t\triangleq \norm{\mathbf{s}_t-\hat{\mathbf{s}}_t}$. Using \eqref{eq:ssm_block_general} and triangle inequality,
+\begin{align}
+e_{t+1}
+&=
+\norm{\Phi_t(\mathbf{s}_t,\mathbf{u}_t;\boldsymbol{\theta})-\Phi_t(\hat{\mathbf{s}}_t,\mathbf{u}_t;\hat{\boldsymbol{\theta}})} \nonumber\\
+&\le
+\norm{\Phi_t(\mathbf{s}_t,\mathbf{u}_t;\boldsymbol{\theta})-\Phi_t(\hat{\mathbf{s}}_t,\mathbf{u}_t;\boldsymbol{\theta})}
++
+\norm{\Phi_t(\hat{\mathbf{s}}_t,\mathbf{u}_t;\boldsymbol{\theta})-\Phi_t(\hat{\mathbf{s}}_t,\mathbf{u}_t;\hat{\boldsymbol{\theta}})} \nonumber\\
+&\le \rho e_t + L_{\Phi,\theta}\norm{\Delta\boldsymbol{\theta}}.
+\end{align}
+Since $e_0=0$ and $\rho<1$, unrolling yields $e_t \le \frac{L_{\Phi,\theta}}{1-\rho}\norm{\Delta\boldsymbol{\theta}}$ for all $t$. Finally,
+\begin{align}
+\norm{\mathbf{y}_t-\hat{\mathbf{y}}_t}
+&\le
+\norm{\Psi_t(\mathbf{s}_t;\boldsymbol{\theta})-\Psi_t(\hat{\mathbf{s}}_t;\boldsymbol{\theta})}
++
+\norm{\Psi_t(\hat{\mathbf{s}}_t;\boldsymbol{\theta})-\Psi_t(\hat{\mathbf{s}}_t;\hat{\boldsymbol{\theta}})} \nonumber\\
+&\le L_{\Psi}e_t + L_{\Psi,\theta}\norm{\Delta\boldsymbol{\theta}}
+\le
+\left(\frac{L_{\Psi}L_{\Phi,\theta}}{1-\rho}+L_{\Psi,\theta}\right)\norm{\Delta\boldsymbol{\theta}},
+\end{align}
+which proves \eqref{eq:ssm_quant_bound}.
+\end{IEEEproof}
+
+\noindent\textbf{Interpretation.} The bound \eqref{eq:ssm_quant_bound} does not grow with token length because $\rho<1$ prevents perturbations from being amplified through recursion. For selective SSMs such as Mamba, $\Phi_t$ is input-dependent; the same conclusion holds under uniform contractivity and the stated regularity assumptions over the operating range.
+
+\subsection{Structural Implications and Asymmetric Architecture}
+\label{subsec:asym_conclude}
+For delay--angular CSI exhibiting long-tailed leakage \eqref{eq:longtail_bound}, hard-locality encoders may incur structural truncation loss unless receptive fields are substantially expanded, because the residual tail energy decays only polynomially with receptive-field size \eqref{eq:hard_tail}. In contrast, SSM-based encoders provide soft locality: long-range components are not abruptly removed but recursively aggregated with exponentially decaying weights \eqref{eq:soft_tail_bound}, yielding a rapidly diminishing incremental influence from very distant coefficients under the same UE complexity regime. Moreover, when the state recursion is contractive, quantization-induced perturbations do not amplify with token length (Proposition~\ref{prop:quant_robust}), supporting robust UE-side low-precision inference.
+
+Motivated by these observations and the encoder-induced floor in \eqref{eq:mse_decomp}, we adopt an asymmetric CSI feedback architecture that deploys a lightweight Mamba-style SSM encoder at the UE \cite{Mamba} and a higher-capacity Transformer-based decoder at the BS (in the spirit of TransNet \cite{TransNet}). The BS decoder aims to approximate the conditional mean $\E[\mathbf{X}_a\given \mathbf{Z}]$, refining reconstruction without affecting the encoder-induced floor.
+
+% =========================================================
+\section{RP-MPQ: Offline Policy Set Construction}
+\label{sec:offline}
+% =========================================================
+This section presents the offline stage of RP-MPQ. A \emph{policy} specifies a mixed-precision configuration applied to the \emph{UE-side encoder} during inference, while the feedback-link quantization $Q_{\mathrm{fb}}(\cdot)$ in \eqref{eq:latent_quant} is kept fixed. The offline goal is to compress an exponentially large mixed-precision space into a compact candidate set for lightweight, reliability-aware online selection. We consider a discrete set of normalized UE compute budgets $\mathcal{C}\subset(0,1]$, where each $c\in\mathcal{C}$ denotes a fraction of the FP32 encoder cost.
+
+\subsection{Mixed-Precision Policy Space}
+\label{subsec:policy_space}
+Let the UE-side encoder consist of $M$ quantizable blocks. A mixed-precision policy is a block-wise assignment of bit-widths
+\begin{equation}
+\pi \triangleq (b_1, b_2, \ldots, b_M),
+\label{eq:policy_def}
+\end{equation}
+where $b_m \in \mathcal{B}$ and $\mathcal{B}$ denotes the discrete set of supported bit-widths. In this work, we apply mixed precision to encoder \emph{weights} while keeping activations fixed to INT16. Let $\Pi$ denote the induced policy space:
+\begin{equation}
+|\Pi| = |\mathcal{B}|^M,
+\label{eq:policy_cardinality}
+\end{equation}
+which makes exhaustive evaluation infeasible for moderate $M$.
+
+\subsection{Intra-Block Sensitivity and a Hessian-Based Surrogate}
+\label{subsec:hessian_surrogate}
+To enable efficient coarse pruning, we adopt a block-wise second-order surrogate commonly used in sensitivity-aware mixed-precision quantization (e.g., \cite{HAWQV3}). For block $m$ quantized at bit-width $b$, we approximate the induced reconstruction-loss increase by
+\begin{equation}
+\Omega_m(b)
+\;\triangleq\;
+\mathrm{Tr}\!\left(\mathbf{H}_m\right)\,
+\norm{\Delta\boldsymbol{\theta}_m^{(b)}}_2^2,
+\label{eq:omega_def}
+\end{equation}
+where $\mathbf{H}_m$ denotes a block-wise Hessian (or curvature proxy) of the reconstruction loss with respect to the encoder parameters of block $m$, and $\Delta\boldsymbol{\theta}_m^{(b)}$ denotes the effective perturbation induced by quantization at bit-width $b$. In RP-MPQ, \eqref{eq:omega_def} is used only for offline coarse pruning.
+
+\subsection{ILP-Based Coarse Candidate Generation}
+\label{subsec:ilp_pruning}
+Let $\kappa_m(b)$ denote the compute cost of executing block $m$ at bit-width $b$ (e.g., BOPs), normalized to an FP32 baseline such that $\sum_{m=1}^{M}\kappa_m(\mathrm{FP32})=1$. Using binary assignment variables $x_{m,b} \in \{0,1\}$, we formulate
+\begin{align}
+\min_{\{x_{m,b}\}} \quad
+& \sum_{m=1}^{M}\sum_{b\in\mathcal{B}} x_{m,b}\,\Omega_m(b)
+\label{eq:ilp_obj}\\
+\text{s.t.}\quad
+& \sum_{b\in\mathcal{B}} x_{m,b} = 1,\quad \forall m,
+\label{eq:ilp_onehot}\\
+& \sum_{m=1}^{M}\sum_{b\in\mathcal{B}} x_{m,b}\,\kappa_m(b) \le c,
+\label{eq:ilp_budget}
+\end{align}
+for each budget level $c\in\mathcal{C}$. We solve \eqref{eq:ilp_obj}--\eqref{eq:ilp_budget} offline and preserve multiple near-optimal policies under each budget:
+\begin{equation}
+\Pi_{\mathrm{ILP}}^{(c)} \triangleq \set{ \pi^{(c,1)}, \ldots, \pi^{(c,K)} }.
+\label{eq:ilp_candidates}
+\end{equation}
+Retaining multiple candidates is important because policies with similar surrogate scores can yield heterogeneous end-to-end distortion once quantization noise propagates through subsequent blocks.
+
+\subsection{Inter-Block Effects and a Distributional Refinement Criterion}
+\label{subsec:kl_refine}
+Quantization noise introduced at one block propagates through subsequent blocks, producing inter-block interaction effects that are not fully captured by a block-separable surrogate. To refine candidates tractably, we adopt a distributional view of the encoder output.
+
+Let $p^{(\pi)}_{\mathrm{enc}}(\mathbf{z})$ denote the empirical distribution of encoder outputs $\mathbf{z}=f^{(\pi)}_\theta(\mathbf{X}_a)$ induced by policy $\pi$ over a calibration set. Let $\pi^{(\mathrm{FP32})}$ denote the full-precision reference configuration used only for KL evaluation. We measure the policy-induced output shift by
+\begin{equation}
+J(\pi)
+\triangleq
+D_{\mathrm{KL}}
+\!\left(
+p^{(\pi)}_{\mathrm{enc}}(\mathbf{z})
+\;\big\|\;
+p^{(\mathrm{FP32})}_{\mathrm{enc}}(\mathbf{z})
+\right),
+\label{eq:kl_objective}
+\end{equation}
+where $D_{\mathrm{KL}}(\cdot\|\cdot)$ denotes the Kullback--Leibler divergence. In practice, $p^{(\pi)}_{\mathrm{enc}}$ is approximated using a lightweight density approximation on encoder outputs (e.g., histogramming in a low-dimensional projection or a simple parametric fit). We use $J(\pi)$ only to rank policies within the ILP-pruned candidate set.
+
+\subsection{Representative Policy Set Construction}
+\label{subsec:policy_set}
+For each budget level $c \in \mathcal{C}$, the ILP step yields a reduced candidate set $\Pi_{\mathrm{ILP}}^{(c)}$. We then select a representative policy by minimizing the distributional criterion:
+\begin{equation}
+\pi^{(c)}
+\;\triangleq\;
+\argmin_{\pi \in \Pi_{\mathrm{ILP}}^{(c)}} J(\pi).
+\label{eq:rep_policy}
+\end{equation}
+Collecting representatives across budgets produces the final candidate policy set
+\begin{equation}
+\Pi_{\mathcal{C}}
+\;\triangleq\;
+\set{ \pi^{(c)} \;\given\; c\in\mathcal{C} }.
+\label{eq:final_policy_set}
+\end{equation}
+
+\subsection{Computational Advantage of the Two-Stage Design}
+\label{subsec:offline_complexity}
+Direct KL-based evaluation over the full policy space $\Pi$ incurs exponential complexity:
+\begin{equation}
+\mathrm{Cost}_{\mathrm{full}}
+=
+|\mathcal{B}|^{M}
+\cdot
+\mathcal{O}\!\left(|\mathcal{D}| \cdot \mathrm{FLOPs}_{\mathrm{enc}}\right),
+\label{eq:full_cost}
+\end{equation}
+where $|\mathcal{D}|$ denotes the calibration dataset size and $\mathrm{FLOPs}_{\mathrm{enc}}$ denotes encoder inference complexity. In contrast, RP-MPQ evaluates \eqref{eq:kl_objective} only on the ILP-pruned sets of size $K \ll |\mathcal{B}|^M$, yielding
+\begin{equation}
+\mathrm{Cost}_{\mathrm{two-stage}} = \mathrm{Cost}_{\mathrm{ILP}}(M,|\mathcal{B}|,K) + |\mathcal{C}|K \cdot \mathcal{O}\!\left(|\mathcal{D}| \cdot \mathrm{FLOPs}_{\mathrm{enc}}\right).
+\label{eq:two_stage_cost}
+\end{equation}
+This makes offline policy construction practical while retaining diversity across candidate operating points.
+
+% =========================================================
+\section{RP-MPQ: Online Reliability-Aware Policy Selection}
+\label{sec:online}
+% =========================================================
+Given the offline-constructed candidate set $\Pi_{\mathcal{C}}$ in \eqref{eq:final_policy_set}, the UE selects, for each CSI realization, a mixed-precision policy that preserves rate-based reliability while satisfying a long-term average UE compute budget.
+
+\subsection{Candidate Policies and UE-Side Cost Model}
+\label{subsec:online_cost}
+Each policy $\pi \in \Pi_{\mathcal{C}}$ is associated with a normalized UE-side cost $\kappa_{\pi} \in (0,1]$, computed offline. For the $t$-th CSI realization, the UE selects a policy $\pi_t \in \Pi_{\mathcal{C}}$, and its cost is $\kappa_{\pi_t}$. The resulting sequence must satisfy a long-term average budget constraint $\bar{c}\in(0,1]$, normalized to the FP32 encoder baseline.
+
+For a policy $\pi=(b_1,\ldots,b_M)$,
+\begin{equation}
+\kappa_{\pi} \triangleq
+\sum_{m=1}^{M} \kappa_m(b_m) \in (0,1],
+\label{eq:kappa_policy_sum}
+\end{equation}
+and the FP32 reference satisfies $\kappa_{\pi^{(\mathrm{FP32})}}=1$.
+
+\subsection{Transmission-Rate-Based Reliability Metric}
+\label{subsec:reliability_metric}
+Let $r_t(\pi)$ denote the achievable downlink transmission rate when precoding and link adaptation are performed using the reconstructed CSI obtained under policy $\pi$. Let $r_t^{\mathrm{ref}}$ denote the reference rate computed from the truncated ground-truth CSI representation (oracle), consistent with the feedback representation. We define an outage event as
+\begin{equation}
+r_t(\pi) < \gamma\, r_t^{\mathrm{ref}},
+\label{eq:outage_def}
+\end{equation}
+where $\gamma \in (0,1)$ specifies the target reliability ratio.
+
+\subsection{Reliability Violation Cost and Sparsity-Aware Weighting}
+\label{subsec:violation_cost}
+To capture both outage occurrence and severity, we define the reliability violation cost
+\begin{equation}
+V_{t,\pi}
+\triangleq
+\mathbb{I}\!\left(r_t(\pi) < \gamma\, r_t^{\mathrm{ref}}\right)
++
+\beta \frac{\max\!\left(0,\, \gamma r_t^{\mathrm{ref}} - r_t(\pi)\right)}{\gamma r_t^{\mathrm{ref}} + \epsilon},
+\label{eq:violation_cost}
+\end{equation}
+where $\mathbb{I}(\cdot)$ denotes the indicator function, $\beta \ge 0$ balances outage frequency and magnitude, and $\epsilon>0$ is a small constant for numerical stability.
+
+To emphasize reliability for realizations that are more sensitive to distortion, we introduce a sparsity-aware importance weight
+\begin{equation}
+w_t \triangleq 1 + \alpha s_t,
+\label{eq:sparsity_weight}
+\end{equation}
+where $\alpha \ge 0$ controls the influence of sparsity and $s_t$ denotes the delay--angular sparsity level of the $t$-th realization.
+
+We quantify sparsity via Hoyer's measure. Let $\mathbf{v}_t \in \mathbb{R}^{N}$ denote a real-valued vectorization of the truncated delay--angular CSI (e.g., stacking real and imaginary parts), where $N \triangleq 2 N_a N_r N_t$. Then
+\begin{equation}
+s_t
+\triangleq
+\frac{\sqrt{N} - \norm{\mathbf{v}_t}_1 / \norm{\mathbf{v}_t}_2}{\sqrt{N} - 1}.
+\label{eq:hoyer}
+\end{equation}
+
+\subsection{Online Optimization and Decision Rule}
+\label{subsec:online_rule}
+The online policy selection objective is to minimize the expected weighted reliability violation under a long-term average compute constraint:
+\begin{equation}
+\min_{\{\pi_t \in \Pi_{\mathcal{C}}\}}
+\E\!\left[w_t\, V_{t,\pi_t}\right]
+\quad \text{s.t.} \quad
+\E\!\left[\kappa_{\pi_t}\right] \le \bar{c}.
+\label{eq:online_primal}
+\end{equation}
+Introducing a Lagrange multiplier $\lambda \ge 0$ yields the relaxed objective
+\begin{equation}
+\min_{\{\pi_t\}} \E\!\left[w_t\, V_{t,\pi_t} + \lambda\,(\kappa_{\pi_t}-\bar{c})\right],
+\label{eq:online_dual}
+\end{equation}
+and the online decision decomposes into a per-sample rule:
+\begin{equation}
+\pi_t^\star
+=
+\argmin_{\pi \in \Pi_{\mathcal{C}}}
+\left(
+w_t\, V_{t,\pi}
++
+\lambda\, \kappa_\pi
+\right).
+\label{eq:online_decision}
+\end{equation}
+
+\subsection{Practical Surrogate and Budget Calibration}
+\label{subsec:surrogate_lambda}
+The exact $V_{t,\pi}$ in \eqref{eq:violation_cost} depends on downlink rate computations and is not directly available at the UE at decision time. Therefore, we evaluate a lightweight surrogate
+\begin{equation}
+V_{t,\pi} \approx \tilde{V}(\pi; \boldsymbol{\xi}_t),
+\label{eq:V_surrogate}
+\end{equation}
+where $\boldsymbol{\xi}_t$ denotes observable UE-side features (e.g., SNR estimate and sparsity $s_t$). In our implementation, $\tilde{V}$ is realized as an offline-constructed lookup table by averaging violation costs over discretized feature bins. Accordingly, the practical online decision replaces $V_{t,\pi}$ in \eqref{eq:online_decision} with
+\begin{equation}
+\pi_t^\star
+=
+\argmin_{\pi \in \Pi_{\mathcal{C}}}
+\left(
+w_t\, \tilde{V}(\pi;\boldsymbol{\xi}_t)
++
+\lambda\, \kappa_\pi
+\right).
+\label{eq:online_decision_surrogate}
+\end{equation}
+The multiplier $\lambda$ is calibrated offline (e.g., via bisection) such that the induced policy sequence satisfies the long-term average constraint in \eqref{eq:online_primal}. Once $\lambda$ is fixed, online selection requires only evaluating \eqref{eq:online_decision_surrogate} over the finite set $\Pi_{\mathcal{C}}$.
+
+\subsection{Online Complexity}
+\label{subsec:online_complexity}
+Since $|\Pi_{\mathcal{C}}| = |\mathcal{C}| \ll |\mathcal{B}|^M$, the online complexity scales as $\mathcal{O}(|\mathcal{C}|)$ per CSI realization. Therefore, RP-MPQ enables reliability-aware mixed-precision adaptation with negligible overhead relative to encoder inference.
+
+% =========================================================
+\section{Experimental Results}
+\label{sec:experiments}
+% =========================================================
+This section validates the proposed asymmetric CSI feedback framework with RP-MPQ along three dimensions: (i) structural efficiency of the asymmetric UE encoder, (ii) effectiveness of the offline mixed-precision policy construction, and (iii) reliability-aware online adaptation under identical long-term average UE-side compute budgets.
+
+\subsection{Experimental Setup}
+\label{subsec:exp_setup}
+We consider an FDD massive MIMO downlink system with $N_t=32$ transmit antennas at the BS and a single-antenna UE ($N_r=1$). CSI is represented in the delay--angular domain with $N_f=1024$ OFDM subcarriers, and only the first $N_a=32$ delay taps are retained for feedback. The BS employs maximum ratio transmission (MRT) based on reconstructed CSI, and performance is evaluated at SNR levels of 10, 20, and 30~dB.
+
+We use COST~2100 outdoor channel realizations \cite{COST2100} (carrier frequency $f_c=300$~MHz) and additionally evaluate generalization on FR1 TDL-A/B/C profiles from 3GPP TR~38.901 \cite{3GPP38901}. The UE encoder is a Mamba-style selective SSM \cite{Mamba}, and the BS decoder is Transformer-based. Training uses AdamW with learning rate $10^{-3}$ for 200 epochs. Mixed-precision quantization is applied to UE-side encoder weights with candidate bit-widths $\{16,8,4,2\}$, while internal activations use 16-bit and the latent uses 8-bit quantization for feedback. Unless stated otherwise, complexity is reported as encoder FLOPs (full precision) or encoder BOPs (quantized inference), normalized consistently across methods. We report UE-side compute budgets as \emph{encoder BOP saving relative to an FP32 baseline} (32-bit weights and 32-bit activations); specifically, a saving level $S\in\mathcal{S}$ corresponds to an average cost constraint $\bar{c}=1-S$, and the optimization problems are formulated over the corresponding cost set $\mathcal{C}=\{1-S: S\in\mathcal{S}\}$.
+
+\begin{table}[t]
+\centering
+\caption{Simulation Setup}
+\label{tab:sim_setup}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{ll}
+\toprule
+\textbf{Item} & \textbf{Setting} \\
+\midrule
+System & FDD downlink, $N_t=32$, $N_r=1$ \\
+CSI representation & Delay--angular, $N_f=1024$, $N_a=32$ \\
+SNR (dB) & 10 / 20 / 30 \\
+Dataset & COST~2100 (outdoor, $f_c=300$~MHz) \cite{COST2100}; FR1 TDL-A/B/C \cite{3GPP38901} \\
+\midrule
+Model & Mamba (UE encoder) \cite{Mamba} + Transformer (BS decoder) \\
+Compression ratio & $\mathrm{CR}=1/4$, $1/16$ \\
+Training & 200 epochs, batch size 1000, AdamW (lr $10^{-3}$) \\
+\midrule
+Weights (UE encoder) & 16 / 8 / 4 / 2 bit (mixed precision) \\
+Activations & 16-bit internal, 8-bit latent \\
+Saving set $\mathcal{S}$ & 0.75--0.95 (75--95\%) encoder BOP saving vs.\ FP32 (step 0.005) \\
+Reliability target $\gamma$ & 0.99 / 0.98 / 0.95 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Structural Efficiency of the Asymmetric Encoder}
+\label{subsec:struct_eff}
+We first evaluate structural reconstruction performance without encoder weight quantization. Table~\ref{tab:struct_cr14_final} reports NMSE and computational complexity at $\mathrm{CR}=1/4$.
+
+\begin{table}[t]
+\centering
+\caption{Structural Performance ($\mathrm{CR}=1/4$)}
+\label{tab:struct_cr14_final}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccc}
+\toprule
+Model & NMSE (dB) & Enc. FLOPs (M) & Total FLOPs (M) \\
+\midrule
+CsiNet   & -8.75  &  2.17 &  10.89 \\
+CLNet    & -12.87 &  1.51 &   4.54 \\
+TransNet & -14.86 & 17.86 & 35.72 \\
+\textbf{Mamba-Transformer AE} & \textbf{-15.34} & \textbf{4.87} & 22.74 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Structural Performance ($\mathrm{CR}=1/16$)}
+\label{tab:struct_cr18_final}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccc}
+\toprule
+Model & NMSE (dB) & Enc. FLOPs (M) & Total FLOPs (M) \\
+\midrule
+CsiNet   & -4.51 & 0.60 & 7.74 \\
+CLNet    & -5.56 & 0.73 & 2.97 \\
+TransNet & \textemdash & \textemdash & \textemdash \\
+\textbf{Mamba-Transformer AE} & \textemdash & \textemdash & \textemdash \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Quantization Robustness}
+\label{subsec:quant_robust}
+We evaluate uniform weight quantization under INT16/INT8/INT4 at $\mathrm{CR}=1/4$ and $\mathrm{CR}=1/16$.
+Table~\ref{tab:uniform_quant_cr4} and Table~\ref{tab:uniform_quant_cr16} report NMSE and encoder BOPs for each precision level.
+Fig.~\ref{fig:uniform_quant} visualizes the accuracy--efficiency trade-off: at $\mathrm{CR}=1/4$ the Mamba-Transformer AE retains near-lossless NMSE down to INT8 ($87.5\%$ BOPs saving), whereas the CNN baselines (CsiNet, CLNet) degrade sharply beyond INT16. Similar trends hold at $\mathrm{CR}=1/16$.
+This robustness gap motivates the mixed-precision strategy developed in the subsequent sections.
+
+\begin{table}[t]
+\centering
+\caption{Uniform quantization performance ($\mathrm{CR}=1/4$); encoder activations are fixed to INT16 and the listed precision refers to weight bit-width.}
+\label{tab:uniform_quant_cr4}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llccc}
+\toprule
+Model & Prec. & NMSE (dB) & Enc.\ BOPs (M) & Saving (\%) \\
+\midrule
+CsiNet & INT16 & $-8.74$  & 268.61 & 75.00 \\
+       & INT8  &   1.46   & 134.30 & 87.50 \\
+       & INT4  &  19.40   &  67.15 & 93.75 \\
+       & INT2  &  22.32   &  33.58 & 96.88 \\
+\midrule
+CLNet  & INT16 & $-12.82$ & 268.69 & 75.00 \\
+       & INT8  &   0.15   & 134.34 & 87.50 \\
+       & INT4  &  23.36   &  67.17 & 93.75 \\
+       & INT2  &  25.75   &  33.59 & 96.88 \\
+\midrule
+TransNet & INT16 & \textemdash & \textemdash & 75.00 \\
+         & INT8  & \textemdash & \textemdash & 87.50 \\
+         & INT4  & \textemdash & \textemdash & 93.75 \\
+\midrule
+Mamba-Transformer AE & INT16 & $-15.37$ & 1245.46 & 75.00 \\
+                     & INT8  & $-15.19$ &  622.85 & 87.50 \\
+                     & INT4  &   0.03   &  311.47 & 93.75 \\
+                     & INT2  &   7.69   &  155.78 & 96.88 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\columnwidth]{figures/fig_uniform_quant.pdf}
+\caption{NMSE vs.\ BOPs saving under uniform weight quantization (solid: $\mathrm{CR}=1/4$, dashed: $\mathrm{CR}=1/16$).
+The Mamba-Transformer AE maintains near-lossless reconstruction up to $87.5\%$ BOPs saving (INT8), while the CNN baselines degrade sharply beyond INT16.}
+\label{fig:uniform_quant}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Uniform quantization performance ($\mathrm{CR}=1/16$); encoder activations are fixed to INT16 and the listed precision refers to weight bit-width.}
+\label{tab:uniform_quant_cr16}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llccc}
+\toprule
+Model & Prec. & NMSE (dB) & Enc.\ BOPs (M) & Saving (\%) \\
+\midrule
+CsiNet & INT16 & $-4.51$ & 67.18 & 75.00 \\
+       & INT8  & $-4.31$ & 33.59 & 87.50 \\
+       & INT4  &  16.74  & 16.80 & 93.75 \\
+       & INT2  &  22.54  &  8.40 & 96.88 \\
+\midrule
+CLNet  & INT16 & $-5.55$ & 67.26 & 75.00 \\
+       & INT8  &  13.62  & 33.63 & 87.50 \\
+       & INT4  &  25.66  & 16.82 & 93.75 \\
+       & INT2  &  22.63  &  8.41 & 96.88 \\
+\midrule
+TransNet & INT16 & \textemdash & \textemdash & 75.00 \\
+         & INT8  & \textemdash & \textemdash & 87.50 \\
+         & INT4  & \textemdash & \textemdash & 93.75 \\
+\midrule
+Mamba-Transformer AE & INT16 & \textemdash & \textemdash & 75.00 \\
+                     & INT8  & \textemdash & \textemdash & 87.50 \\
+                     & INT4  & \textemdash & \textemdash & 93.75 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Ablation: Offline RP-MPQ Refinement}
+\label{subsec:offline_ablation}
+We evaluate the effectiveness of KL-based refinement in the offline stage. Fig.~\ref{fig:kl_vs_ilp} compares ILP-predicted ranking with KL-based measurement under identical BOP budgets. KL-based refinement improves agreement between surrogate ranking and observed encoder-output distortion, reducing inconsistencies due to the block-independence assumption in the surrogate.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\columnwidth]{kl_vs_ilp.pdf}
+\caption{ILP-based ranking versus KL-refined policy evaluation under identical computational budgets.}
+\label{fig:kl_vs_ilp}
+\end{figure}
+
+\subsection{Online RP-MPQ: Reliability under Identical Budgets}
+\label{subsec:online_outage}
+We compare uniform precision, static mixed precision (offline-only), and online RP-MPQ under identical \emph{average} UE-side encoder BOP budgets. Reliability is evaluated via outage probability under targets $\gamma \in \{0.99, 0.98, 0.95\}$ at SNR levels of 10, 20, and 30~dB.
+
+\subsubsection{Transmission Rate and Outage Definition}
+To compute per-subcarrier MRT precoding, the reconstructed delay--angular CSI $\hat{\mathbf{X}}_a$ is mapped back to the frequency domain by inverse angular transforms and a DFT across delay taps. Specifically, we form $\hat{\mathbf{H}}_d[\ell]=\mathbf{F}_r^{\mathsf{H}}\hat{\mathbf{X}}[\ell]\mathbf{F}_t$ for $\ell=0,\ldots,N_a-1$, zero-pad $\hat{\mathbf{H}}_d[\ell]=\mathbf{0}$ for $\ell\ge N_a$, and compute $\hat{\mathbf{H}}[n]=\frac{1}{\sqrt{N_f}}\sum_{\ell=0}^{N_f-1}\hat{\mathbf{H}}_d[\ell]e^{-j2\pi n\ell/N_f}$. For $N_r=1$, the corresponding channel vector is $\hat{\mathbf{h}}[n]\in\mathbb{C}^{N_t}$. For the $t$-th CSI realization, the achievable rate is defined as
+\begin{equation}
+r_t(\mathbf{x})
+\triangleq
+\frac{1}{N_f}\sum_{n=0}^{N_f-1}
+\log_2\!\left(1+\rho \abs{\mathbf{h}_t[n]^{\mathsf{H}} \mathbf{w}_{\mathbf{x}}[n]}^2 \right),
+\label{eq:rate_def}
+\end{equation}
+where $\mathbf{h}_t[n]$ is the true channel, $\rho$ is the received SNR, and $\mathbf{w}_{\mathbf{x}}[n] \triangleq \mathbf{x}[n]/\norm{\mathbf{x}[n]}_2$ is the MRT beamforming vector. Equal power allocation across subcarriers is assumed.
+
+Under policy $\pi$, let $\hat{\mathbf{h}}_{t,\pi}[n]$ denote the reconstructed channel used to form the MRT precoder, and define $r_t(\pi) \triangleq r_t(\hat{\mathbf{h}}_{t,\pi})$. The reference rate is $r_t^{\mathrm{ref}} \triangleq r_t(\mathbf{h}_t^{(a)})$, where $\mathbf{h}_t^{(a)}[n]$ is obtained from the truncated ground-truth $\mathbf{X}_a$ via the same inverse transforms (with zero-padding), so that $r_t^{\mathrm{ref}}$ does not penalize the representation truncation itself. An outage event is declared when
+\begin{equation}
+r_t(\pi) < \gamma\, r_t^{\mathrm{ref}}.
+\label{eq:outage_event}
+\end{equation}
+
+\subsubsection{Outage Comparison}
+Fig.~\ref{fig:outage_final} presents outage probabilities under identical average encoder BOP budgets. Online RP-MPQ suppresses outage events more effectively than static policies without increasing average UE-side encoder complexity.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{outage_curves.pdf}
+\caption{Outage probability comparison under identical average UE-side computational budgets. Top: static policies. Bottom: online RP-MPQ.}
+\label{fig:outage_final}
+\end{figure*}
+
+\subsection{Budget Consistency Validation}
+\label{subsec:budget_validation}
+To verify that the calibrated multiplier $\lambda$ enforces the long-term compute constraint, we report the target versus achieved average encoder budgets in Table~\ref{tab:budget_validation}.
+
+\begin{table}[t]
+\centering
+\caption{Budget Consistency under Online RP-MPQ}
+\label{tab:budget_validation}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{ccc}
+\toprule
+Target Avg. Budget & Achieved Avg. Budget & Deviation (\%) \\
+\midrule
+\textemdash & \textemdash & \textemdash \\
+\textemdash & \textemdash & \textemdash \\
+\textemdash & \textemdash & \textemdash \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Validation under FR1 TDL Profiles and UE Runtime}
+\label{subsec:tdl_runtime}
+To evaluate structural generalization, we train on a mixed set of FR1 TDL-A/B/C realizations and evaluate separately on each profile without profile-specific tuning. Table~\ref{tab:tdl_generalization} reports profile-wise NMSE and encoder complexity. We also report measured runtime on a UE platform in Table~\ref{tab:runtime_validation}.
+
+\begin{table}[t]
+\centering
+\caption{Profile-wise Generalization under FR1 TDL (CR=1/4)}
+\label{tab:tdl_generalization}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{lccc}
+\toprule
+Metric & TDL-A & TDL-B & TDL-C \\
+\midrule
+NMSE (dB) & \textemdash & \textemdash & \textemdash \\
+Encoder FLOPs (M) & \textemdash & \textemdash & \textemdash \\
+Model size (MB) & \textemdash & \textemdash & \textemdash \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Measured Runtime of Online RP-MPQ on UE}
+\label{tab:runtime_validation}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{lc}
+\toprule
+Component & Latency (ms) \\
+\midrule
+Base encoder execution & \textemdash \\
+Online precision selection & \textemdash \\
+Total encoder latency & \textemdash \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =========================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% =========================================================
+This paper studied CSI feedback for FDD massive MIMO under UE-side inference constraints from a two-level perspective. We distinguished (i) an encoder-induced information floor, which is fundamentally limited by the UE-side representation, from (ii) additional operational degradation introduced by low-precision execution.
+
+To reduce the structural floor under UE constraints, we proposed an asymmetric CSI feedback autoencoder that deploys a lightweight SSM-based encoder at the UE and a higher-capacity decoder at the BS, aligning architectural roles with UE--BS computational asymmetry and delay--angular CSI characteristics. Building on this fixed structural framework, we developed RP-MPQ, which separates offline policy construction (sensitivity-based pruning and KL-based refinement) from lightweight online reliability-aware policy selection under a long-term average UE compute budget. Experimental results demonstrated an improved accuracy--complexity trade-off and reduced rate-based outage events under identical average UE-side budgets.
+
+% --------------------
+% References
+% --------------------
+\begin{thebibliography}{99}
+
+\bibitem{CsiNet}
+C.-K. Wen, W.-T. Shih, and S.~Jin,
+``Deep learning for massive MIMO CSI feedback,''
+\emph{IEEE Wireless Communications Letters}, vol.~7, no.~5, pp.~748--751, Oct.~2018.
+
+\bibitem{CLNet}
+S.~Ji and M.~Li,
+``CLNet: Complex input lightweight neural network designed for massive MIMO CSI feedback,''
+\emph{IEEE Wireless Communications Letters}, vol.~10, no.~11, pp.~2318--2322, Nov.~2021.
+
+\bibitem{TransNet}
+Z.~Liu, Y.~Chen, and C.-K. Wen,
+``TransNet: Full-stack deep learning-based CSI feedback for massive MIMO systems,''
+\emph{IEEE Transactions on Wireless Communications}, vol.~21, no.~10, pp.~8261--8275, Oct.~2022.
+
+\bibitem{ACCsiNet}
+B.~Cao, Y.~Yang, P.~Ran, D.~He, and G.~He,
+``ACCsiNet: Asymmetric convolution-based autoencoder framework for massive MIMO CSI feedback,''
+\emph{IEEE Communications Letters}, vol.~25, no.~12, pp.~3873--3877, Dec.~2021.
+
+\bibitem{Jindal2006}
+N.~Jindal,
+``MIMO broadcast channels with finite-rate feedback,''
+\emph{IEEE Transactions on Information Theory}, vol.~52, no.~11, pp.~5045--5060, Nov.~2006.
+
+\bibitem{HAWQV3}
+H.~Yao, Z.~Dong, and K.~Keutzer,
+``HAWQ-V3: Dyadic neural network quantization,''
+in \emph{Proc.\ ICML}, 2021.
+
+\bibitem{COST2100}
+L.~Liu \emph{et al.},
+``The COST 2100 MIMO channel model,''
+\emph{IEEE Wireless Communications}, vol.~19, no.~6, pp.~92--99, Dec.~2012.
+
+\bibitem{Mamba}
+A.~Gu and T.~Dao,
+``Mamba: Linear-time sequence modeling with selective state spaces,''
+arXiv preprint arXiv:2312.00752, 2023.
+
+\bibitem{MambaWireless}
+R.~Zhang, R.~Zhang, Y.~Lu, W.~Chen, B.~Ai, and D.~Niyato,
+``Mamba for wireless communications and networking: Principles and opportunities,''
+arXiv preprint arXiv:2508.00403, Aug.~2025, doi: 10.48550/arXiv.2508.00403.
+
+\bibitem{3GPP38901}
+3GPP,
+``Study on channel model for frequencies from 0.5 to 100~GHz,''
+3GPP TR~38.901, V16.1.0, Dec.~2020.
+
+\end{thebibliography}
+
+\end{document}

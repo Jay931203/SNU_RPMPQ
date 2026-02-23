@@ -1,6 +1,13 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+# cuDNN DLL path for local GPU (pip install nvidia-cudnn-cu11)
+_cudnn_bin = os.path.join(os.path.dirname(os.__file__), '..', 'site-packages', 'nvidia', 'cudnn', 'bin')
+_cublas_bin = os.path.join(os.path.dirname(os.__file__), '..', 'site-packages', 'nvidia', 'cublas', 'bin')
+for _p in [_cudnn_bin, _cublas_bin]:
+    if os.path.isdir(_p):
+        os.environ['PATH'] = os.path.abspath(_p) + ';' + os.environ.get('PATH', '')
+
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Dense, BatchNormalization, Reshape, Conv2D, Add, LeakyReLU
 from tensorflow.keras.models import Model
@@ -11,7 +18,10 @@ import math
 import time
 import argparse
 import ast
-import pulp 
+try:
+    import pulp
+except ImportError:
+    pulp = None  # only needed for --analyze_all
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -29,6 +39,10 @@ parser.add_argument('--lut_path', type=str, default=None)
 parser.add_argument('--act_quant', type=int, default=32) # Sim시 16 권장
 parser.add_argument('--aq', type=int, default=0)
 parser.add_argument('--batch_size', type=int, default=200)
+parser.add_argument('--encoded_dim', type=int, default=512,
+                    help='Latent dimension (512=CR1/4, 128=CR1/16, 64=CR1/32, 32=CR1/64)')
+parser.add_argument('--weight_bits', type=int, default=32,
+                    help='Uniform weight quantization bits (32=FP32)')
 
 try: args = parser.parse_args()
 except: args = parser.parse_args([])
@@ -37,9 +51,13 @@ ENV_MODE = args.env
 ACT_BITS = args.act_quant
 QUANTIZATION_BITS = args.aq
 
-data_dir = '/content/drive/MyDrive/MambaCompression/MambaIC/data/'
-base_model_dir = '/content/drive/MyDrive/MambaCompression/Python_CsiNet-master/saved_model/'
-img_height, img_width, img_channels, encoded_dim, residual_num = 32, 32, 2, 512, 2 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+data_dir = os.path.join(PROJECT_DIR, 'MambaIC', 'data') + os.sep
+base_model_dir = os.path.join(SCRIPT_DIR, 'saved_model') + os.sep
+img_height, img_width, img_channels = 32, 32, 2
+encoded_dim = args.encoded_dim
+residual_num = 2
 
 # =========================================================
 # [2] Mamba-Style Quantization Logic
@@ -112,7 +130,7 @@ def build_model(act_bits):
     # Names MUST match .h5 file exactly
     ec = Conv2D(2, (3,3), padding='same', data_format=df, name='conv2d_1')
     eb = BatchNormalization(axis=bn_axis, name='batch_normalization_1')
-    el = LeakyReLU(negative_slope=0.3, name='leaky_re_lu_1')
+    el = LeakyReLU(alpha=0.3, name='leaky_re_lu_1')
     er = Reshape((img_channels*img_height*img_width,), name='reshape_1')
     ed = Dense(encoded_dim, activation='linear', name='dense_1')
     
@@ -127,14 +145,14 @@ def build_model(act_bits):
         res_layers.append({
             'c1': Conv2D(8, (3,3), padding='same', data_format=df, name=f'conv2d_{idx1}'),
             'b1': BatchNormalization(axis=bn_axis, name=f'batch_normalization_{idx1}'),
-            'l1': LeakyReLU(negative_slope=0.3, name=f'leaky_re_lu_{idx1}'),
+            'l1': LeakyReLU(alpha=0.3, name=f'leaky_re_lu_{idx1}'),
             'c2': Conv2D(16, (3,3), padding='same', data_format=df, name=f'conv2d_{idx2}'),
             'b2': BatchNormalization(axis=bn_axis, name=f'batch_normalization_{idx2}'),
-            'l2': LeakyReLU(negative_slope=0.3, name=f'leaky_re_lu_{idx2}'),
+            'l2': LeakyReLU(alpha=0.3, name=f'leaky_re_lu_{idx2}'),
             'c3': Conv2D(2, (3,3), padding='same', data_format=df, name=f'conv2d_{idx3}'),
             'b3': BatchNormalization(axis=bn_axis, name=f'batch_normalization_{idx3}'),
             'add': Add(name=f'add_{i+1}'),
-            'lout': LeakyReLU(negative_slope=0.3, name=f'leaky_re_lu_{idx3}_out')
+            'lout': LeakyReLU(alpha=0.3, name=f'leaky_re_lu_{idx3}_out')
         })
     
     dfinal = Conv2D(2, (3,3), padding='same', activation='sigmoid', data_format=df, name='conv2d_8')
@@ -161,6 +179,48 @@ def build_model(act_bits):
     dec_out = dfinal(x)
     dec_model = Model(dec_in, dec_out, name='Decoder')
     return ae, enc_model, dec_model
+
+# =========================================================
+# [3.5] FLOPs Counter
+# =========================================================
+def count_flops(model):
+    """Count FLOPs for a Keras model via frozen graph profiler."""
+    from tensorflow.python.framework.convert_to_constants import convert_variables_to_constants_v2_as_graph
+    concrete = tf.function(lambda x: model(x))
+    concrete_func = concrete.get_concrete_function(
+        tf.TensorSpec([1] + list(model.input_shape[1:]), model.dtype))
+    frozen_func, graph_def = convert_variables_to_constants_v2_as_graph(concrete_func)
+    with tf.Graph().as_default() as graph:
+        tf.graph_util.import_graph_def(graph_def, name='')
+        opts = tf.compat.v1.profiler.ProfileOptionBuilder.float_operation()
+        opts['output'] = 'none'  # suppress stdout
+        flops_info = tf.compat.v1.profiler.profile(graph, options=opts)
+    return flops_info.total_float_ops
+
+def print_flops(ae, encoder, decoder):
+    """Print FLOPs for AE, Encoder, Decoder."""
+    cr = img_channels * img_height * img_width // encoded_dim
+    print(f"\n  [FLOPs] CsiNet (CR=1/{cr}, dim={encoded_dim})")
+    total_params = ae.count_params()
+    enc_params = encoder.count_params()
+    dec_params = total_params - enc_params
+    print(f"  Params  - Total: {total_params:,}  Enc: {enc_params:,}  Dec: {dec_params:,}")
+    try:
+        ae_flops = count_flops(ae)
+        enc_flops = count_flops(encoder)
+        dec_flops = ae_flops - enc_flops
+        print(f"  FLOPs   - Total: {ae_flops/1e6:.2f}M  Enc: {enc_flops/1e6:.2f}M  Dec: {dec_flops/1e6:.2f}M")
+    except Exception as e:
+        print(f"  FLOPs measurement failed: {e}")
+        print("  Falling back to manual calculation...")
+        # Manual FLOPs: Conv2D = 2*H*W*Kh*Kw*Cin*Cout, Dense = 2*in*out
+        enc_flops_m = (2*32*32*3*3*2*2 + 2*2048*encoded_dim) / 1e6
+        dec_dense = 2*encoded_dim*2048 / 1e6
+        dec_conv = 2 * residual_num * (2*32*32*3*3*2*8 + 2*32*32*3*3*8*16 + 2*32*32*3*3*16*2) / 1e6
+        dec_final = 2*32*32*3*3*2*2 / 1e6
+        dec_flops_m = dec_dense + dec_conv + dec_final
+        total_m = enc_flops_m + dec_flops_m
+        print(f"  FLOPs   - Total: {total_m:.2f}M  Enc: {enc_flops_m:.2f}M  Dec: {dec_flops_m:.2f}M")
 
 # =========================================================
 # [4] HAWQ & ILP (Corrected)
@@ -350,12 +410,12 @@ if args.analyze_all:
         z_q = quantize_feedback(z, QUANTIZATION_BITS)
         x_hat = decoder.predict(z_q, verbose=0)
         
-        # Complex NMSE Calc (Strict)
+        # Complex NMSE Calc — per-sample (mean of ratios), field standard
         x_true_c = calib_data[:,0] - 0.5 + 1j*(calib_data[:,1] - 0.5)
         x_hat_c = x_hat[:,0] - 0.5 + 1j*(x_hat[:,1] - 0.5)
-        mse = np.mean(np.abs(x_true_c - x_hat_c)**2)
-        pwr = np.mean(np.abs(x_true_c)**2)
-        nmse_db = 10*np.log10(mse/pwr)
+        mse_per = np.sum(np.abs(x_true_c - x_hat_c)**2, axis=(1, 2))
+        pwr_per = np.sum(np.abs(x_true_c)**2, axis=(1, 2))
+        nmse_db = 10*np.log10(np.mean(mse_per / pwr_per))
         
         best_cand['MSE'] = mse
         lut_raw.append(best_cand)
@@ -384,3 +444,55 @@ if args.analyze_all:
 elif args.run_online:
     # Online Logic (Same as before but uses apply_mp_policy_strict)
     pass
+
+else:
+    # =========================================================
+    # Baseline Evaluation (with optional uniform quantization)
+    # =========================================================
+    W_BITS = args.weight_bits
+    print(f"\n[Eval] CsiNet {ENV_MODE}, dim={encoded_dim}, W={W_BITS}bit, act={ACT_BITS}bit, aq={QUANTIZATION_BITS}bit")
+    with tf.device('/device:GPU:0'):
+        ae, encoder, decoder = build_model(act_bits=ACT_BITS)
+        w_path = os.path.join(base_model_dir, f'model_CsiNet_{ENV_MODE}_dim{encoded_dim}.h5')
+        ae.load_weights(w_path, by_name=True)
+        print(f"   Loaded: {w_path}")
+
+    # Uniform weight quantization
+    if W_BITS < 32:
+        print(f"   Applying INT{W_BITS} weight quantization...")
+        for layer in ae.layers:
+            if isinstance(layer, (Conv2D, Dense)):
+                weights = layer.get_weights()
+                if not weights: continue
+                w_q = quantize_int_asym_np(weights[0], W_BITS)
+                layer.set_weights([w_q] + list(weights[1:]))
+
+    print("   Running inference...", end=" ", flush=True)
+    z = encoder.predict(x_test, batch_size=args.batch_size, verbose=0)
+    z_q = quantize_feedback(z, QUANTIZATION_BITS)
+    x_hat = decoder.predict(z_q, batch_size=args.batch_size, verbose=0)
+    print("Done.")
+
+    # Complex NMSE — per-sample (mean of ratios), field standard
+    x_true_c = x_test[:,0] - 0.5 + 1j*(x_test[:,1] - 0.5)
+    x_hat_c  = x_hat[:,0]  - 0.5 + 1j*(x_hat[:,1]  - 0.5)
+    mse_per_sample = np.sum(np.abs(x_true_c - x_hat_c)**2, axis=(1, 2))
+    pwr_per_sample = np.sum(np.abs(x_true_c)**2, axis=(1, 2))
+    nmse_db = 10 * np.log10(np.mean(mse_per_sample / pwr_per_sample))
+
+    # BOPs calculation
+    cr = img_channels * img_height * img_width // encoded_dim
+    enc_params = encoder.count_params()
+    w_bits_eff = W_BITS if W_BITS < 32 else 32
+    a_bits_eff = ACT_BITS if ACT_BITS < 32 else 32
+    enc_bops = enc_params * w_bits_eff * a_bits_eff
+    fp32_bops = enc_params * 32 * 32
+    saving = (1 - enc_bops / fp32_bops) * 100
+
+    print(f"\n{'='*55}")
+    print(f"  CsiNet ({ENV_MODE}, CR=1/{cr}, W=INT{w_bits_eff}, A=INT{a_bits_eff})")
+    print(f"  NMSE = {nmse_db:.2f} dB")
+    print(f"  Enc. Params: {enc_params:,}")
+    print(f"  Enc. BOPs: {enc_bops/1e6:.2f}M  (Saving vs FP32: {saving:.2f}%)")
+    print_flops(ae, encoder, decoder)
+    print(f"{'='*55}")

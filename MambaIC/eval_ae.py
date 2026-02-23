@@ -1,8 +1,7 @@
-# 파일 이름: eval_ae.py
-# (최종 수정: 4-14-FIX. Hybrid 모드 지원 + FLOPs/Rho 복구 완료)
+# eval_ae.py
+# Evaluation script for Asymmetric CSI Feedback Autoencoder
 
 import os, sys
-# ✅ 현재 파일 기준으로 프로젝트 루트 경로를 sys.path에 추가
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.append(project_root)
@@ -21,19 +20,18 @@ import scipy.io as sio
 import math
 from torch.cuda.amp import autocast
 
-# ✅ [복구] THOP 라이브러리 로드
 try:
     from thop import profile, clever_format
-    print("thop (FLOPs/Params) 임포트 성공.")
+    print("[INFO] thop (FLOPs/Params) imported successfully.")
 except ImportError:
-    print("Warning: thop 라이브러리를 찾을 수 없습니다. (pip install thop)")
+    print("[WARN] thop library not found. (pip install thop)")
     profile, clever_format = None, None
 
 try:
     from MambaAE import MambaAE
-    print("✅ from MambaAE import MambaAE 임포트 성공.")
+    print("[INFO] MambaAE imported successfully.")
 except ImportError as e:
-    print(f"오류: {e}. MambaAE.py 파일이 프로젝트 루트에 있는지 확인하세요.")
+    print(f"[ERROR] {e}. Ensure MambaAE.py is in the project root.")
     exit()
 
 # ----------------------------------------------------
@@ -80,7 +78,9 @@ class AverageMeter:
         self.val = val; self.sum += val * n; self.count += n; self.avg = self.sum / self.count
 
 # ----------------------------------------------------
-# Metrics Helper Functions (Rho, NMSE)
+# Metrics: NMSE (dB) and Rho (cross-correlation)
+# NMSE = 10*log10(||X - X_hat||^2 / ||X||^2)
+# Rho = frequency-domain cross-correlation (Section VI-A)
 # ----------------------------------------------------
 def calculate_nmse_db(original_norm_0_1, reconstructed_norm_0_1, normalization_params):
     min_val, range_val = normalization_params
@@ -102,7 +102,6 @@ def calculate_nmse_db(original_norm_0_1, reconstructed_norm_0_1, normalization_p
     nmse_db = 10 * torch.log10(nmse)
     return nmse_db
 
-# ✅ [복구] Rho 계산 함수
 def calculate_rho(original_norm_0_1, reconstructed_norm_0_1, normalization_params):
     min_val, range_val = normalization_params
     original_data = (original_norm_0_1 * range_val) + min_val
@@ -123,7 +122,6 @@ def calculate_rho(original_norm_0_1, reconstructed_norm_0_1, normalization_param
     rho_batch = cov / (x_std * y_std + 1e-8) 
     return rho_batch.mean().item()
 
-# ✅ [복구] Metrics 통합 계산
 def calculate_metrics(original_norm_0_1, reconstructed_norm_0_1, normalization_params):
     nmse_db = calculate_nmse_db(original_norm_0_1, reconstructed_norm_0_1, normalization_params).item()
     rho = calculate_rho(original_norm_0_1, reconstructed_norm_0_1, normalization_params)
@@ -133,7 +131,7 @@ def calculate_metrics(original_norm_0_1, reconstructed_norm_0_1, normalization_p
 # Parse Arguments
 # ----------------------------------------------------
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate Mamba-AE")
+    parser = argparse.ArgumentParser(description="Evaluate Asymmetric CSI Feedback AE")
     
     parser.add_argument("--test_path", type=str, default="data/DATA_Htestin.mat")
     parser.add_argument("--test_key", type=str, default="HT")
@@ -146,7 +144,7 @@ def parse_args():
     parser.add_argument("--chunk_sizes", nargs='+', type=int, default=[8, 8, 4])
     parser.add_argument("--scan_mode", type=str, default="chunked_ss2d")
     
-    # ✅ [신규] 옵션들
+    # Beam mask and compression mode options
     parser.add_argument("--use_beam_mask", action="store_true", help="Enable Soft Beam Masking")
     parser.add_argument("--compression_mode", type=str, default="default", choices=["default", "hybrid"])
     parser.add_argument("--beam_rank_K", type=int, default=4, help="Beam rank K for hybrid mode")
@@ -169,10 +167,10 @@ def main():
     args = parse_args()
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
     print(f"--- Evaluation Mode: {device} ---")
-    print(f"✅ Loading Checkpoint: {args.checkpoint}")
-    print(f"✅ Model Config: N={args.N}, M={args.M}, Mode={args.scan_mode}")
-    print(f"✅ Compression: {args.compression_mode.upper()} (K={args.beam_rank_K})")
-    print(f"✅ Beam Masking: {args.use_beam_mask}")
+    print(f"[INFO] Loading Checkpoint: {args.checkpoint}")
+    print(f"[INFO] Model Config: N={args.N}, M={args.M}, Mode={args.scan_mode}")
+    print(f"[INFO] Compression: {args.compression_mode.upper()} (K={args.beam_rank_K})")
+    print(f"[INFO] Beam Masking: {args.use_beam_mask}")
 
     # 1. Dataset Load
     norm_params = None
@@ -201,7 +199,7 @@ def main():
     checkpoint = torch.load(args.checkpoint, map_location=device)
     state_dict = checkpoint['state_dict']
     
-    # ✅ Handle DataParallel & THOP artifact cleaning
+    # Handle DataParallel prefix & THOP artifact cleaning
     new_state_dict = {}
     for k, v in state_dict.items():
         # Filter out thop artifacts
@@ -215,12 +213,12 @@ def main():
             
     try:
         net.load_state_dict(new_state_dict, strict=True)
-        print("✅ Weights loaded successfully (strict=True).")
+        print("[INFO] Weights loaded successfully (strict=True).")
     except RuntimeError as e:
-        print(f"⚠️ Warning: Strict loading failed. Retrying with strict=False.\nError: {e}")
+        print(f"[WARN] Strict loading failed. Retrying with strict=False.\nError: {e}")
         net.load_state_dict(new_state_dict, strict=False)
 
-    # 4. ✅ [복구] FLOPs Calculation
+    # 4. FLOPs Calculation
     if profile:
         dummy_input = torch.randn(1, 2, 32, 32).to(device)
         # Quantizer disable for profiling if needed
@@ -229,8 +227,8 @@ def main():
         print("Calculating FLOPs and Parameters...")
         macs, params = profile(net, inputs=(dummy_input, ), verbose=False)
         macs, params = clever_format([macs, params], "%.3f")
-        print(f"✅ Total Parameters: {params}")
-        print(f"✅ Total FLOPs (MACs): {macs}")
+        print(f"[INFO] Total Parameters: {params}")
+        print(f"[INFO] Total FLOPs (MACs): {macs}")
         print("-------------------------------------------------------")
     else:
         print("Warning: 'thop' not installed. Skipping FLOPs/Params calculation.")
@@ -238,7 +236,7 @@ def main():
     # 5. Inference Loop
     net.eval()
     nmse_meter = AverageMeter()
-    rho_meter = AverageMeter() # ✅ Rho Meter 복구
+    rho_meter = AverageMeter()
     
     # Warm-up Quantizer off
     if hasattr(net, 'module'): net.module.disable_quant = False
@@ -254,7 +252,7 @@ def main():
             with autocast():
                 x_hat = net(d)
             
-            # ✅ Calculate Both Metrics
+            # Calculate NMSE (dB) and Rho
             nmse_db, rho = calculate_metrics(d.cpu(), x_hat.cpu(), test_dataset.normalization_params)
             
             # Update Meters
@@ -264,9 +262,9 @@ def main():
             pbar.set_postfix(NMSE_dB=f"{nmse_meter.avg:.4f}", Rho=f"{rho_meter.avg:.4f}")
             
     print("\n========================================")
-    print(f"✅ FINAL RESULTS:")
-    print(f"🚀 Test NMSE: {nmse_meter.avg:.4f} dB")
-    print(f"🚀 Test Rho : {rho_meter.avg:.4f}")
+    print(f"FINAL RESULTS:")
+    print(f"  Test NMSE: {nmse_meter.avg:.4f} dB")
+    print(f"  Test Rho : {rho_meter.avg:.4f}")
     print("========================================")
 
 if __name__ == "__main__":
