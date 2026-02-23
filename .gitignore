@@ -1,16 +1,8 @@
-# ===== Data files =====
+# ===== Data files (too large for GitHub) =====
 *.mat
-*.h5
-*.hdf5
 
-# ===== Model weights / checkpoints =====
-*.pth
-*.pth.tar
-*.pt
-*.onnx
+# ===== TensorFlow saved models =====
 **/variables/
-*.pb
-*.mlx
 **/tensorflow/
 
 # ===== Python =====

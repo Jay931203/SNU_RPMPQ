@@ -38,8 +38,6 @@ __pycache__/
 # OSX dir files
 .DS_Store
 
-# Data and models are either
+# Data
 data/*
 snapshots/
-checkpoints/
-*.pth
