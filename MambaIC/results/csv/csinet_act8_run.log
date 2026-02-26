@@ -1,0 +1,7 @@
+WARNING:tensorflow:From C:\Users\hyunj\miniconda3\envs\py3\Lib\site-packages\keras\src\backend\common\global_state.py:82: The name tf.reset_default_graph is deprecated. Please use tf.compat.v1.reset_default_graph instead.
+
+Initializing...
+Traceback (most recent call last):
+  File "G:\내 드라이브\MambaCompression\Python_CsiNet-master\csinet_onlytest.py", line 408, in <module>
+    print(f"\U0001f680 [OFFLINE-STRICT] Mamba-Style Pipeline Started")
+UnicodeEncodeError: 'cp949' codec can't encode character '\U0001f680' in position 0: illegal multibyte sequence

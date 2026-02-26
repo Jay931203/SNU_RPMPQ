@@ -18,6 +18,7 @@ import math
 import time
 import argparse
 import ast
+import re
 try:
     import pulp
 except ImportError:
@@ -33,6 +34,8 @@ tf.keras.backend.clear_session()
 parser = argparse.ArgumentParser()
 parser.add_argument('--env', type=str, default='outdoor', choices=['indoor', 'outdoor'])
 parser.add_argument('--analyze_all', action='store_true', help='Offline Pipeline')
+parser.add_argument('--extend', action='store_true', help='Extend: run 95.1-97.0%% and append to existing CSV')
+parser.add_argument('--wide_step', type=float, default=None, help='Wide sweep step size (e.g. 0.05). Range 85-98%%')
 parser.add_argument('--run_online', action='store_true', help='Online Simulation')
 parser.add_argument('--target_saving', type=float, default=75.0)
 parser.add_argument('--lut_path', type=str, default=None)
@@ -88,29 +91,45 @@ def quantize_int_asym_np(w, bits):
 
 def apply_mp_policy_strict(model, policy):
     """
-    [Critical Fix] Applies policy by matching clean layer names.
+    Applies MP policy to model layers. Handles _partN chunk splitting.
     Returns count of applied layers.
     """
     applied_count = 0
-    # Clean up policy keys if they contain '/kernel:0' or similar
     clean_policy = {k.split('/')[0]: v for k, v in policy.items()}
-    
+
+    # Separate chunk policies (e.g. dense_1_part3) from regular ones
+    chunk_map = {}   # {base_layer_name: {chunk_idx: bits}}
+    regular_policy = {}
+    for key, bits in clean_policy.items():
+        m = re.match(r"^(.+)_part(\d+)$", key)
+        if m:
+            base, idx = m.group(1), int(m.group(2))
+            chunk_map.setdefault(base, {})[idx] = bits
+        else:
+            regular_policy[key] = bits
+
     for layer in model.layers:
-        if layer.name in clean_policy:
-            bits = clean_policy[layer.name]
-            weights = layer.get_weights()
-            if not weights: continue # Skip if no weights (e.g. InputLayer)
-            
-            w = weights[0] # Kernel is always idx 0
-            w_q = quantize_int_asym_np(w, bits)
-            
-            # Restore weights (Kernel + Bias if exists)
-            new_weights = [w_q]
-            if len(weights) > 1: new_weights.append(weights[1])
-            
+        weights = layer.get_weights()
+        if not weights: continue
+
+        if layer.name in chunk_map:
+            bits_info = chunk_map[layer.name]
+            n_chunks = max(bits_info.keys()) + 1
+            w = weights[0]
+            w_chunks = np.array_split(w, n_chunks, axis=0)
+            q_chunks = [quantize_int_asym_np(c, bits_info.get(i, 32))
+                        if bits_info.get(i, 32) < 32 else c
+                        for i, c in enumerate(w_chunks)]
+            new_weights = [np.concatenate(q_chunks, axis=0)] + list(weights[1:])
             layer.set_weights(new_weights)
             applied_count += 1
-            
+
+        elif layer.name in regular_policy:
+            bits = regular_policy[layer.name]
+            w_q = quantize_int_asym_np(weights[0], bits)
+            layer.set_weights([w_q] + list(weights[1:]))
+            applied_count += 1
+
     return applied_count
 
 def quantize_feedback(y, bits):
@@ -226,28 +245,30 @@ def print_flops(ae, encoder, decoder):
 # [4] HAWQ & ILP (Corrected)
 # =========================================================
 class HAWQAnalyzerTF:
-    def __init__(self, model, data):
+    def __init__(self, model, encoder, data):
         self.model = model; self.data = tf.convert_to_tensor(data)
-        self.target_layers = [l for l in model.layers if isinstance(l, (Conv2D, Dense))]
+        enc_layer_names = {l.name for l in encoder.layers}
+        self.target_layers = [l for l in model.layers
+                              if isinstance(l, (Conv2D, Dense))
+                              and l.name in enc_layer_names]
 
     def compute_importance(self):
-        print(f"\n⚖️ [HAWQ] Computing Hessian Trace...")
+        print(f"\n[HAWQ] Computing Hessian Trace...")
         # 1. 1st Order
         with tf.GradientTape() as tape2:
             with tf.GradientTape() as tape1:
                 preds = self.model(self.data)
                 loss = tf.reduce_mean(tf.square(self.data - preds))
-            
+
             vars_ = []
-            layer_map = {}
+            layer_names = []  # parallel list — avoids v.name collision in Keras 3.x
             for layer in self.target_layers:
-                # IMPORTANT: Get only Kernel (weights[0]), ignore bias
                 if not layer.trainable_variables: continue
-                # Assume first var is Kernel (standard Keras)
+                # kernel only (no bias)
                 w_var = [v for v in layer.trainable_variables if 'bias' not in v.name]
                 if w_var:
                     vars_.extend(w_var)
-                    for v in w_var: layer_map[v.name] = layer.name # Key is Variable Name
+                    layer_names.extend([layer.name] * len(w_var))
 
             grads = tape1.gradient(loss, vars_)
             grad_v_prod = tf.constant(0.0)
@@ -257,21 +278,37 @@ class HAWQAnalyzerTF:
                     v = tf.cast(tf.random.uniform(g.shape, 0, 2, dtype=tf.int32)*2-1, tf.float32)
                     vecs.append(v); grad_v_prod += tf.reduce_sum(g * v)
                 else: vecs.append(None)
-        
+
         # 2. 2nd Order
+        SPLIT_THRESHOLD = 20000
+        NUM_CHUNKS = 32
+
         hvp = tape2.gradient(grad_v_prod, vars_)
         results = []
-        for var, hv, v in zip(vars_, hvp, vecs):
+        for var, hv, v, lname in zip(vars_, hvp, vecs, layer_names):
             if hv is None: continue
-            lname = layer_map.get(var.name, var.name.split('/')[0]) # Get Layer Name
             trace = tf.abs(tf.reduce_sum(v*hv)).numpy()
             w_np = var.numpy()
-            res = {"Layer": lname, "Params": np.prod(var.shape), "Trace": trace}
-            for b in [16, 8, 4, 2]:
-                w_q = quantize_int_asym_np(w_np, b)
-                res[f"Omg_INT{b}"] = trace * np.linalg.norm(w_np - w_q)**2
-            results.append(res)
-        
+
+            if w_np.size > SPLIT_THRESHOLD:
+                # Split large layer into chunks (same as rpmpq_baselines.py)
+                w_chunks = np.array_split(w_np, NUM_CHUNKS, axis=0)
+                trace_per_chunk = trace / NUM_CHUNKS
+                for i, chunk in enumerate(w_chunks):
+                    chunk_res = {"Layer": f"{lname}_part{i}",
+                                 "Params": chunk.size,
+                                 "Trace": trace_per_chunk}
+                    for b in [16, 8, 4, 2]:
+                        w_q = quantize_int_asym_np(chunk, b)
+                        chunk_res[f"Omg_INT{b}"] = trace_per_chunk * np.linalg.norm(chunk - w_q)**2
+                    results.append(chunk_res)
+            else:
+                res = {"Layer": lname, "Params": np.prod(var.shape), "Trace": trace}
+                for b in [16, 8, 4, 2]:
+                    w_q = quantize_int_asym_np(w_np, b)
+                    res[f"Omg_INT{b}"] = trace * np.linalg.norm(w_np - w_q)**2
+                results.append(res)
+
         return pd.DataFrame(results)
 
 class ILP_Solver:
@@ -333,7 +370,7 @@ def evaluate_candidates_kl(encoder, candidates, data, original_weights):
     for cand in candidates:
         cnt = apply_mp_policy_strict(encoder, cand['Policy'])
         # Debug: Ensure policy was applied
-        if cnt == 0: print("⚠️ Warning: Policy applied to 0 layers!"); continue
+        if cnt == 0: print("[WARN] Policy applied to 0 layers!"); continue
             
         z_q = encoder.predict(data, verbose=0)
         z_q_log = tf.nn.log_softmax(z_q, axis=1)
@@ -357,7 +394,7 @@ def plot_pareto_curve(df, env_mode, filename):
     plt.title(f"Pareto Frontier - CsiNet ({env_mode})")
     plt.xlabel("BOPs Saving (%)"); plt.ylabel("NMSE (dB)")
     plt.grid(True, linestyle='--', alpha=0.6); plt.legend()
-    plt.savefig(filename, dpi=300); print(f"📊 Graph Saved: {filename}")
+    plt.savefig(filename, dpi=300); print(f" Graph Saved: {filename}")
 
 # =========================================================
 # [6] Main Execution
@@ -370,17 +407,17 @@ x_test = np.reshape(x_test, (len(x_test), img_channels, img_height, img_width))
 calib_data = x_test[:args.batch_size]
 
 if args.analyze_all:
-    print(f"🚀 [OFFLINE-STRICT] Mamba-Style Pipeline Started")
+    print(f"[OFFLINE-STRICT] Mamba-Style Pipeline Started")
     
     # 1. HAWQ (FP32)
     print("   -> Phase 1: HAWQ Analysis (FP32 Model)...")
     with tf.device('/device:GPU:0'):
-        ae_fp32, _, _ = build_model(act_bits=32) 
+        ae_fp32, enc_fp32, _ = build_model(act_bits=32)
         w_path = os.path.join(base_model_dir, f'model_CsiNet_{ENV_MODE}_dim{encoded_dim}.h5')
         ae_fp32.load_weights(w_path, by_name=True)
-        analyzer = HAWQAnalyzerTF(ae_fp32, calib_data)
+        analyzer = HAWQAnalyzerTF(ae_fp32, enc_fp32, calib_data)
         hawq_df = analyzer.compute_importance()
-        if hawq_df.empty: print("🚨 Error: HAWQ results empty."); exit()
+        if hawq_df.empty: print("[ERR] Error: HAWQ results empty."); exit()
         del ae_fp32; tf.keras.backend.clear_session()
 
     # 2. Pareto Search (INT16 Model)
@@ -391,7 +428,17 @@ if args.analyze_all:
         orig_weights = {l.name: l.get_weights() for l in encoder.layers if l.weights}
 
     solver = ILP_Solver(hawq_df, act_bits=ACT_BITS)
-    targets = np.arange(50.0, 95.1, 0.5)
+    if args.extend:
+        targets = np.arange(95.1, 97.1, 0.1)
+        print("   [Extend mode] 95.1-97.0%")
+    elif args.wide_step is not None:
+        targets = np.arange(85.0, 98.0 + args.wide_step * 0.1, args.wide_step)
+        print(f"   [Wide mode] 85.0-98.0% | step {args.wide_step}%  | {len(targets)} points")
+    elif ACT_BITS < 16:
+        targets = np.arange(88.0, 97.1, 0.1)
+        print(f"   [act={ACT_BITS}] Target range: 88.0-97.0%")
+    else:
+        targets = np.arange(85.0, 95.1, 0.1)
     lut_raw = []
     
     pbar = tqdm(targets, desc="Searching")
@@ -416,17 +463,28 @@ if args.analyze_all:
         mse_per = np.sum(np.abs(x_true_c - x_hat_c)**2, axis=(1, 2))
         pwr_per = np.sum(np.abs(x_true_c)**2, axis=(1, 2))
         nmse_db = 10*np.log10(np.mean(mse_per / pwr_per))
-        
-        best_cand['MSE'] = mse
+
+        best_cand['MSE'] = float(np.mean(mse_per / pwr_per))
+        best_cand['NMSE_dB'] = nmse_db
+        best_cand['Target_Saving'] = float(tgt)
         lut_raw.append(best_cand)
         restore_weights_tf(encoder, orig_weights)
         
         avg_bits = np.mean(list(best_cand['Policy'].values()))
         pbar.set_postfix({'Sv': f"{best_cand['Actual_Saving']:.1f}%", 'dB': f"{nmse_db:.2f}", 'Bit': f"{avg_bits:.1f}"})
 
-    # 3. Smoothing
-    df = pd.DataFrame(lut_raw).sort_values('Actual_Saving')
-    print(f"\n🧹 Phase 3: Smoothing...")
+    # 3. Combine + Smoothing
+    df_new = pd.DataFrame(lut_raw).sort_values('Actual_Saving')
+    out_dir = os.path.join(PROJECT_DIR, 'MambaIC', 'results', 'csv')
+    os.makedirs(out_dir, exist_ok=True)
+    act_suffix = f"_a{ACT_BITS}" if ACT_BITS not in (16, 32) else ""
+    csv_name = os.path.join(out_dir, f"mp_policy_lut_csinet_cr4_{ENV_MODE[:3]}{act_suffix}.csv")
+    if args.extend and os.path.exists(csv_name):
+        df_exist = pd.read_csv(csv_name)
+        df = pd.concat([df_exist, df_new], ignore_index=True).sort_values('Actual_Saving')
+    else:
+        df = df_new
+    print(f"\n Phase 3: Smoothing...")
     
     smoothed_mse = []
     current_min = float('inf')
@@ -435,11 +493,10 @@ if args.analyze_all:
         smoothed_mse.append(current_min)
     df['MSE_Smoothed'] = smoothed_mse[::-1]
     
-    csv_name = f"mp_policy_lut_csinet_{ENV_MODE}_strict.csv"
-    png_name = f"mp_policy_pareto_{ENV_MODE}_strict.png"
+    png_name = os.path.join(PROJECT_DIR, 'figures', f"fig_rpmpq_csinet_{ENV_MODE[:3]}{act_suffix}.png")
     df.to_csv(csv_name, index=False)
     plot_pareto_curve(df, ENV_MODE, png_name)
-    print(f"✅ DONE: Saved {csv_name}")
+    print(f"[OK] DONE: Saved {csv_name}")
 
 elif args.run_online:
     # Online Logic (Same as before but uses apply_mp_policy_strict)

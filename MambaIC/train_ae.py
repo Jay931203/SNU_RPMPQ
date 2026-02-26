@@ -36,6 +36,21 @@ os.makedirs(RESULTS_CSV, exist_ok=True)
 os.makedirs(RESULTS_PLOT, exist_ok=True)
 os.makedirs(FIGURES_DIR, exist_ok=True)
 
+# --- Paper figure style (IEEE/publication-ready) ---
+PAPER_FIG_STYLE = {
+    'font.family': 'serif',
+    'font.size': 12,
+    'axes.labelsize': 13,
+    'axes.titlesize': 14,
+    'xtick.labelsize': 11,
+    'ytick.labelsize': 11,
+    'legend.fontsize': 11,
+    'axes.grid': True,
+    'grid.alpha': 0.3,
+    'lines.linewidth': 2.0,
+    'lines.markersize': 5,
+}
+
 # --- Imports ---
 try:
     import onnx
@@ -347,42 +362,53 @@ def run_exp3_sparsity_frontier(model, loader, lut_path, device, norm_params, arg
     res_df = pd.DataFrame(final_results)
 
     # 3. Plot results
+    plt.rcParams.update(PAPER_FIG_STYLE)
+
     # [1] NMSE Performance
-    plt.figure(figsize=(10, 6))
-    plt.plot(res_df['Actual_Saving'], res_df['Base_NMSE'], 'k--', label='Avg NMSE')
+    plt.figure(figsize=(8, 5))
+    plt.plot(res_df['Actual_Saving'], res_df['Base_NMSE'], 'k--', label='Average')
     plt.plot(res_df['Actual_Saving'], res_df['High_S'], 'r-o', label='High Sparsity')
     plt.plot(res_df['Actual_Saving'], res_df['Low_S'], 'b-^', label='Low Sparsity')
-    plt.xlabel("Encoder BOPs Saving (%)"); plt.ylabel("NMSE (dB)"); plt.legend(); plt.grid(True, alpha=0.5)
-    plt.title(f"Sparsity-Stratified NMSE under MP Policies ({args.encoder})")
-    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_sparsity_{args.encoder}.png"))
+    plt.xlabel("BOPs Saving (%)"); plt.ylabel("NMSE (dB)"); plt.legend(); plt.grid(True, alpha=0.3)
+    plt.title(f"Sparsity-Stratified NMSE — {args.encoder}")
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_sparsity_{args.encoder}.png"), dpi=300)
 
     # [2] Stability
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(8, 5))
     plt.plot(res_df['Actual_Saving'], res_df['NMSE_Sigma'], 'm-D')
-    plt.xlabel("Encoder BOPs Saving (%)"); plt.ylabel("Sigma (dB)"); plt.grid(True, alpha=0.5)
-    plt.title(f"NMSE Stability ({args.encoder})")
-    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_sigma_{args.encoder}.png"))
+    plt.xlabel("BOPs Saving (%)"); plt.ylabel("NMSE Std Dev (dB)"); plt.grid(True, alpha=0.3)
+    plt.title(f"NMSE Stability (Std Dev) — {args.encoder}")
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_sigma_{args.encoder}.png"), dpi=300)
 
     # [3] CDF
     if len(target_cdf_data) > 0:
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(8, 5))
         sorted_data = np.sort(target_cdf_data)
         yvals = np.arange(len(sorted_data)) / float(len(sorted_data) - 1)
-        plt.plot(sorted_data, yvals, 'k-', linewidth=2, label=f'CDF @ {res_df.loc[closest_idx, "Actual_Saving"]:.1f}%')
-        plt.axvline(x=res_df.loc[closest_idx, "Base_NMSE"], color='r', linestyle='--', label='Avg NMSE')
-        plt.xlabel("NMSE (dB)"); plt.ylabel("CDF"); plt.grid(True, alpha=0.5); plt.legend(loc='lower right')
-        plt.title(f"NMSE Distribution CDF ({args.encoder})")
-        plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_cdf_{args.encoder}.png"))
+        plt.plot(sorted_data, yvals, 'k-', linewidth=2, label=f'CDF @ {res_df.loc[closest_idx, "Actual_Saving"]:.1f}% saving')
+        plt.axvline(x=res_df.loc[closest_idx, "Base_NMSE"], color='r', linestyle='--', label='Mean NMSE')
+        plt.xlabel("NMSE (dB)"); plt.ylabel("CDF"); plt.grid(True, alpha=0.3); plt.legend(loc='lower right')
+        plt.title(f"NMSE Distribution CDF — {args.encoder}")
+        plt.tight_layout()
+        plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_cdf_{args.encoder}.png"), dpi=300)
 
     # [4] NMSE Outage
-    plt.figure(figsize=(10, 6))
-    plt.plot(res_df['Actual_Saving'], res_df['Outage_Prob'], 'r-X', label='NMSE Outage (< 90% of FP32)')
-    plt.axhline(0.1, color='k', linestyle=':', label='10% Limit')
-    plt.ylim(-0.05, 1.05); plt.xlabel("Encoder BOPs Saving (%)"); plt.ylabel("Outage Probability"); plt.grid(True, alpha=0.5); plt.legend()
-    plt.title(f"NMSE-Based Outage Probability ({args.encoder})")
-    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_outage_{args.encoder}.png"))
-    
-    print(f"[INFO] Exp 3: NMSE analysis complete (4 graphs saved).")
+    plt.figure(figsize=(8, 5))
+    plt.plot(res_df['Actual_Saving'], res_df['Outage_Prob'], 'r-X', label='Outage (NMSE < 90% of FP32)')
+    plt.axhline(0.1, color='k', linestyle=':', label='10% Target')
+    plt.ylim(-0.05, 1.05)
+    plt.xlabel("BOPs Saving (%)"); plt.ylabel("Outage Probability"); plt.grid(True, alpha=0.3); plt.legend()
+    plt.title(f"NMSE-Based Outage Probability — {args.encoder}")
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp3_nmse_outage_{args.encoder}.png"), dpi=300)
+
+    # Save Exp3 results to CSV for future cross-AE comparison
+    res_df['encoder'] = args.encoder
+    res_csv = os.path.join(RESULTS_CSV, f"exp3_results_{args.encoder}.csv")
+    res_df.to_csv(res_csv, index=False)
+    print(f"[INFO] Exp 3: NMSE analysis complete (4 graphs + CSV saved → {res_csv})")
     return res_df
     
     
@@ -679,8 +705,14 @@ def run_exp3_5_rate_outage_analysis(model, loader, lut_path, device, norm_params
     plt.savefig(plot_path, dpi=300)
     print(f"   Saved Subplot: {plot_path}")
 
+    # Save Exp3.5 results to CSV for future cross-AE comparison
+    res_df['encoder'] = args.encoder
+    rate_csv = os.path.join(RESULTS_CSV, f"exp3_5_results_{args.encoder}.csv")
+    res_df.to_csv(rate_csv, index=False)
+    print(f"   Saved Rate CSV: {rate_csv}")
+
     return res_df
-    
+
 def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args):
     """
     [RP-MPQ Online] Reliability-Aware Policy Selection (Section VI-E)
@@ -1038,7 +1070,10 @@ def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args
                 ranc_results.append(res_entry)
 
     ranc_df = pd.DataFrame(ranc_results)
-    print("[INFO] RP-MPQ online simulation completed.")
+    ranc_df['encoder'] = args.encoder
+    ranc_csv = os.path.join(RESULTS_CSV, f"ranc_simulation_results_{args.encoder}.csv")
+    ranc_df.to_csv(ranc_csv, index=False)
+    print(f"[INFO] RP-MPQ online simulation completed. Results saved → {ranc_csv}")
 
     # ---------------------------------------------------------
     # Phase 3: Plotting (Updated for Multi-Target)
@@ -1072,6 +1107,7 @@ def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args
         return px[::-1], py[::-1]
 
     # [Plot 1] Rate Overlay
+    plt.rcParams.update(PAPER_FIG_STYLE)
     plt.figure(figsize=(10, 7))
     
     # Plot baselines (once)
@@ -1094,13 +1130,13 @@ def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args
                      color=snr_colors[snr], linestyle=style['ls'], marker=style['marker'], 
                      markersize=5, alpha=style['alpha'], label=label_str)
                  
-    plt.xlabel("Encoder BOPs Saving (%)")
-    plt.ylabel("Sum Rate (bps/Hz)")
+    plt.xlabel("BOPs Saving (%)", fontsize=13)
+    plt.ylabel("Sum Rate (bps/Hz)", fontsize=13)
     plt.grid(True, alpha=0.3)
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.title(f"Rate: Static MP vs RP-MPQ (gamma targets) - {args.encoder}")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=11)
+    plt.title(f"Sum Rate: Static MP vs. RP-MPQ ($\\gamma$ Targets) — {args.encoder}", fontsize=14)
     plt.tight_layout()
-    plt.savefig(os.path.join(RESULTS_PLOT, f"exp4_final_ranc_rate_multi_{args.encoder}.png"), dpi=300)
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp4_final_ranc_rate_multi_{args.encoder}.png"), dpi=300, bbox_inches='tight')
 
     # [Plot 2] Outage Overlay (Complex)
     # Create one subplot per SNR
@@ -1116,7 +1152,7 @@ def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args
     
     for i, (ax, snr) in enumerate(zip(axes, snr_list)):
         c = snr_colors[snr]
-        ax.set_title(f"SNR {snr}dB (Outage Analysis)", color=c, fontweight='bold')
+        ax.set_title(f"SNR = {snr} dB", color=c, fontweight='bold', fontsize=13)
         
         # 1. Baseline Outage (one curve per threshold)
         for j, th in enumerate(sorted(outage_thresholds, reverse=True)):
@@ -1152,13 +1188,14 @@ def run_exp4_rp_mpq_online(net, test_loader, lut_path, device, baseline_df, args
                     alpha=0.8, label=f'RP-MPQ gamma={qos_t}')
 
         ax.grid(True, alpha=0.3)
-        ax.set_xlabel("Encoder BOPs Saving (%)")
+        ax.set_xlabel("BOPs Saving (%)", fontsize=13)
         if i==0:
-            ax.set_ylabel("Outage Probability")
-            ax.legend()
-    
+            ax.set_ylabel("Outage Probability", fontsize=13)
+            ax.legend(fontsize=11)
+
+    plt.suptitle(f"Outage Prob.: Static MP vs. RP-MPQ ($\\gamma$ Targets) — {args.encoder}", fontsize=14, y=1.02)
     plt.tight_layout()
-    plt.savefig(os.path.join(RESULTS_PLOT, f"exp4_final_ranc_outage_multi_{args.encoder}.png"), dpi=300)
+    plt.savefig(os.path.join(RESULTS_PLOT, f"exp4_final_ranc_outage_multi_{args.encoder}.png"), dpi=300, bbox_inches='tight')
     print("[INFO] Exp 4 (RP-MPQ multi-target) completed.")
 
     real_model.load_state_dict(original_state)
@@ -1446,8 +1483,14 @@ def construct_offline_policy_set(model, loader, hawq_df, layer_params, args, dev
 
     # --- [1. Setup] ---
     solver = ILPCoarseCandidateGenerator(hawq_df, layer_params, args.act_quant)
-    targets = np.arange(75.0, 95.1, 0.5) # 0.5% Step
-    targets = [round(x, 1) for x in targets]
+    if getattr(args, 'wide_sweep', False):
+        step = getattr(args, 'wide_step', 1.0)
+        targets = np.arange(85.0, 98.0 + step * 0.1, step)  # 85-98% (motivation figure)
+    elif getattr(args, 'extend', False):
+        targets = np.arange(95.1, 97.1, 0.1)  # Extend: 95.1-97.0% only
+    else:
+        targets = np.arange(85.0, 95.1, 0.1)  # 0.1% Step (operational LUT)
+    targets = [round(x, 2) for x in targets]
 
     # Pre-compute Hoyer's sparsity for all samples
     _, all_sparsity = compute_hoyer_sparsity_bins(loader.dataset, device)
@@ -1463,7 +1506,9 @@ def construct_offline_policy_set(model, loader, hawq_df, layer_params, args, dev
     fit_indices = np.linspace(0, len(loader.dataset)-1, 1000, dtype=int)
     fit_loader = DataLoader(Subset(loader.dataset, fit_indices), batch_size=args.test_batch_size, shuffle=False)
 
-    print(f"\n[INFO] Offline Policy Search: Range 75-95% | Step 0.5% | Points: {len(targets)}")
+    step_display = getattr(args, 'wide_step', 0.1) if getattr(args, 'wide_sweep', False) else 0.1
+    rng_display = "85-98%" if getattr(args, 'wide_sweep', False) else "85-95%"
+    print(f"\n[INFO] Offline Policy Search: Range {rng_display} | Step {step_display}% | Points: {len(targets)}")
 
     # --- [2. Search & Calibration Loop] ---
     for target_b in tqdm(targets, desc="Scanning Pareto & Calibration"):
@@ -1520,7 +1565,13 @@ def construct_offline_policy_set(model, loader, hawq_df, layer_params, args, dev
 
     # --- [3. Post-processing: Pareto Smoothing] ---
     df_lut = pd.DataFrame(lut_results).sort_values(by='Actual_Saving')
-    
+
+    # Save raw LUT (before smoothing) for separate raw-vs-monotonic visualization
+    nc = getattr(args, 'num_chunks', 32)
+    nc_suffix = "" if nc == 32 else f"_nc{nc}"
+    lut_suffix = "_wide" if getattr(args, 'wide_sweep', False) else ""
+    df_lut.to_csv(os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}{lut_suffix}{nc_suffix}_raw.csv"), index=False)
+
     # Monotonic smoothing for both (fair comparison)
     for col in ['NMSE_KL', 'NMSE_ILP']:
         vals = df_lut[col].tolist()
@@ -1533,8 +1584,9 @@ def construct_offline_policy_set(model, loader, hawq_df, layer_params, args, dev
         df_lut[col] = pruned[::-1]
 
     # --- [4. Save Results] ---
-    df_lut.to_csv(os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}_pruned.csv"), index=False)
-    pd.DataFrame(calibration_data).to_csv(os.path.join(RESULTS_CSV, f"fitting_raw_data_{args.encoder}.csv"), index=False)
+    df_lut.to_csv(os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}{lut_suffix}{nc_suffix}_pruned.csv"), index=False)
+    if not getattr(args, 'wide_sweep', False):  # calibration data only needed for operational LUT
+        pd.DataFrame(calibration_data).to_csv(os.path.join(RESULTS_CSV, f"fitting_raw_data_{args.encoder}{nc_suffix}.csv"), index=False)
 
     print(f"\n[INFO] Offline policy set + calibration data saved.")
     return lut_results
@@ -1757,7 +1809,8 @@ class HessianSensitivityAnalyzer:
 
             print(display_df.head(10).to_string(index=False))
             
-            csv_path = os.path.join(RESULTS_CSV, "hawq_importance_split.csv")
+            hawq_suffix = "" if num_chunks == 32 else f"_nc{num_chunks}"
+            csv_path = os.path.join(RESULTS_CSV, f"hawq_importance_split{hawq_suffix}.csv")
             df.to_csv(csv_path, index=False)
             print(f"\n[INFO] Results saved to: {csv_path}")
 
@@ -1844,7 +1897,7 @@ def train_one_epoch_ae(model, loss_fn, loader, optimizer, epoch, clip_norm, scal
     model.train()
     pbar = tqdm(loader, desc=f"Epoch {epoch + 1} [Train]")
     for d in pbar:
-        d = d.to(device); optimizer.zero_grad()
+        d = d.to(device, non_blocking=True); optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast('cuda', enabled=(device=='cuda')): output = model(d); loss = loss_fn(output, d)
         if device == 'cuda':
             scaler.scale(loss).backward()
@@ -1888,6 +1941,10 @@ def parse_args(argv):
     parser.add_argument('--hybrid_strategy', type=str, default='step')
     parser.add_argument('--analyze_all', action='store_true', help='Offline Search (LUT Gen) + Online Sim')
     parser.add_argument('--run_online_sim', action='store_true', help='Run Online Simulation only')
+    parser.add_argument('--wide_sweep', action='store_true', help='Extended scan 85-98%% (saves to *_wide_raw.csv, does not overwrite operational LUT)')
+    parser.add_argument('--wide_step', type=float, default=1.0, help='Step size for wide_sweep (default: 1.0)')
+    parser.add_argument('--extend', action='store_true', help='Extend: run 95.1-97.0%% and append to existing CSV')
+    parser.add_argument('--num_chunks', type=int, default=32, help='Number of FC chunks for HAWQ split (default: 32, try 4/8 for coarser ILP)')
     parser.add_argument('--use_chunking', action='store_true', default=False, help='Enable chunking')
 
     parser.add_argument("-e", "--epochs", default=0, type=int) 
@@ -1905,6 +1962,8 @@ def parse_args(argv):
     parser.add_argument("--cuda", action="store_true", default=True)
     parser.add_argument("--save", action="store_true", default=True)
     parser.add_argument("--checkpoint", type=str)
+    parser.add_argument("--save_dir", type=str, default=None, help="Override default save directory")
+    parser.add_argument("--start_epoch", type=int, default=0, help="Absolute epoch offset for resume")
     
     return parser.parse_args(argv)
 
@@ -1947,7 +2006,7 @@ def inspect_layer_names(model, lut_path):
 
     print("\n" + "="*80)
     
-def plot_offline_pareto(lut, encoder_name):
+def plot_offline_pareto(lut, encoder_name, lut_suffix="", nc_suffix=""):
     """
     [Exp 1: Offline LUT Accuracy & Pareto Pruning]
     - Flexible key name handling for 'Actual(%)'
@@ -1974,44 +2033,53 @@ def plot_offline_pareto(lut, encoder_name):
     # Sort by Actual_Saving (BOPs Saving)
     lut_df = lut_df.sort_values(by="Actual_Saving").reset_index(drop=True)
 
-    # 2. Plot uses RAW data (fair: both unsmoothed, ILP spikes visible)
-    plt.rcParams.update({'font.size': 13, 'font.family': 'serif'})
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-
-    ax.plot(lut_df["Actual_Saving"], lut_df["NMSE_ILP"],
-            'b--s', label='ILP Prediction', alpha=0.7, markersize=5, linewidth=1.5)
-    ax.plot(lut_df["Actual_Saving"], lut_df["NMSE_KL"],
-            'r-o', label='KL-Refined', linewidth=2, markersize=5)
-
-    ax.set_xlabel("BOPs Saving (%)")
-    ax.set_ylabel("NMSE (dB)")
-    ax.grid(True, linestyle='--', alpha=0.4)
-    ax.legend(fontsize=12)
-    fig.tight_layout()
-
-    fig.savefig(os.path.join(RESULTS_PLOT, f"exp1_pareto_accuracy_{encoder_name}.png"), dpi=300)
-    fig.savefig(os.path.join(FIGURES_DIR, "kl_vs_ilp.pdf"), dpi=300)
-    plt.show()
-
-    # 3. Monotonic smoothing for LUT CSV (used by online stage)
+    # 2. Compute smoothed versions
+    smooth_df = lut_df.copy()
     for col in ['NMSE_KL', 'NMSE_ILP']:
-        vals = lut_df[col].tolist()
+        vals = smooth_df[col].tolist()
         pruned = []
         current_best = float('inf')
         for i in range(len(vals)-1, -1, -1):
             if vals[i] < current_best:
                 current_best = val = vals[i]
             pruned.append(current_best)
-        lut_df[col] = pruned[::-1]
+        smooth_df[col] = pruned[::-1]
 
-    # 4. Save smoothed LUT
-    output_file = os.path.join(RESULTS_CSV, f"mp_policy_lut_{encoder_name}_pruned.csv")
-    lut_df.to_csv(output_file, index=False)
+    # 3. Plot: Separate figures for Raw and Monotonic
+    plt.rcParams.update({'font.size': 12, 'font.family': 'serif'})
+
+    def _plot_single(df, title, xlabel_on, suffix):
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        ax.plot(df["Actual_Saving"], df["NMSE_ILP"],
+                'b--s', label='ILP Prediction', alpha=0.7, markersize=4, linewidth=1.5)
+        ax.plot(df["Actual_Saving"], df["NMSE_KL"],
+                'r-o', label='KL-Refined', linewidth=2, markersize=4)
+        if xlabel_on:
+            ax.set_xlabel("BOPs Saving (%)")
+        ax.set_ylabel("NMSE (dB)")
+        ax.set_title(title, fontsize=13)
+        ax.grid(True, linestyle='--', alpha=0.4)
+        ax.legend(fontsize=11)
+        fig.tight_layout()
+        png_path = os.path.join(RESULTS_PLOT, f"exp1_pareto_accuracy_{encoder_name}_{suffix}.png")
+        pdf_path = os.path.join(FIGURES_DIR, f"kl_vs_ilp_{suffix}.pdf")
+        fig.savefig(png_path, dpi=300)
+        fig.savefig(pdf_path, dpi=300)
+        print(f"[INFO] Saved: {png_path}")
+        plt.show()
+        return fig
+
+    _plot_single(lut_df,    "(a) Raw",               xlabel_on=True,  suffix="raw")
+    _plot_single(smooth_df, "(b) Monotonic Smoothed", xlabel_on=True,  suffix="monotonic")
+
+    # 4. Save smoothed LUT (for online stage)
+    output_file = os.path.join(RESULTS_CSV, f"mp_policy_lut_{encoder_name}{lut_suffix}{nc_suffix}_pruned.csv")
+    smooth_df.to_csv(output_file, index=False)
     print(f"[INFO] Pruned LUT saved to: {output_file}")
     
 def main(argv):
     args = parse_args(argv)
-    save_dir = f"saved_models/{args.encoder}_{args.decoder}"
+    save_dir = args.save_dir if args.save_dir else f"saved_models/{args.encoder}_{args.decoder}"
     print(f"--- Start: {datetime.now()} ---")
     print(f"[INFO] Config: W:[{args.pq}] A:[INT{args.act_quant}] FB:[{args.aq}-bit]")
     print(f"    Hybrid: {args.hybrid} | Chunking: {args.use_chunking}")
@@ -2022,8 +2090,8 @@ def main(argv):
     try:
         train_set = CsiDataset(args.train_path, args.train_key)
         test_set = CsiDataset(args.test_path, args.test_key, normalization_params=train_set.normalization_params)
-        train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=(device=='cuda'))
-        test_loader = DataLoader(test_set, batch_size=args.test_batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=(device=='cuda'))
+        train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=(device=='cuda'), persistent_workers=(args.num_workers > 0))
+        test_loader = DataLoader(test_set, batch_size=args.test_batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=(device=='cuda'), persistent_workers=(args.num_workers > 0))
     except: 
         print("[ERROR] Dataset loading failed"); return
 
@@ -2063,36 +2131,41 @@ def main(argv):
     if args.epochs == 0:
         # Option 1: RP-MPQ Offline Analysis + Online Simulation
         if args.analyze_all:
-            pruned_path = os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}_pruned.csv")
-            fitting_data_path = os.path.join(RESULTS_CSV, f"fitting_raw_data_{args.encoder}.csv")
+            nc = getattr(args, 'num_chunks', 32)
+            nc_suffix = "" if nc == 32 else f"_nc{nc}"
+            lut_suffix = "_wide" if args.wide_sweep else ""
+            pruned_path = os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}{lut_suffix}{nc_suffix}_pruned.csv")
+            fitting_data_path = os.path.join(RESULTS_CSV, f"fitting_raw_data_{args.encoder}{nc_suffix}.csv")
 
             # --- [Step 1] Acquire HAWQ & Layer Params ---
-            # Load existing HAWQ results (compute if not found)
-            hawq_path = os.path.join(RESULTS_CSV, 'hawq_importance_split.csv')
+            hawq_suffix = nc_suffix  # reuse from above
+            hawq_path = os.path.join(RESULTS_CSV, f'hawq_importance_split{hawq_suffix}.csv')
             if os.path.exists(hawq_path):
                 hawq_df = pd.read_csv(hawq_path)
                 print(f"[INFO] Loaded existing HAWQ results: {hawq_path}")
             else:
-                print("\n[INFO] No HAWQ results found. Computing importance...")
-                HessianSensitivityAnalyzer(net, train_loader, mse_loss, device).compute_importance()
+                print(f"\n[INFO] No HAWQ results found. Computing importance (num_chunks={nc})...")
+                HessianSensitivityAnalyzer(net, train_loader, mse_loss, device).compute_importance(num_chunks=nc)
                 hawq_df = pd.read_csv(hawq_path)
-            
+
             # Extract per-layer parameter info for ILP solver
             real_model = net.module if isinstance(net, nn.DataParallel) else net
             l_params = {}
             for n, m in real_model.encoder.named_modules():
                 if isinstance(m, (nn.Conv2d, nn.Linear)):
                     if m.weight.numel() > 20000:
-                        for i, c in enumerate(torch.chunk(m.weight, 32, dim=0)): 
+                        for i, c in enumerate(torch.chunk(m.weight, nc, dim=0)):
                             l_params[f"{n}_part{i}"] = c.numel()
-                    else: 
+                    else:
                         l_params[n] = m.weight.numel()
 
-            # --- [Step 2] Unified Search (75-95%, 0.5% Step) ---
-            # Run unified scan if LUT(.csv) or calibration data(.csv) is missing
-            if not os.path.exists(pruned_path) or not os.path.exists(fitting_data_path):
-                print(f"\n[INFO] Starting unified scan...")
-                print(f"   Range: 75.0% - 95.0% | Resolution: 0.5% Step | Sampling: 1,000 per policy")
+            # --- [Step 2] Unified Search ---
+            # For wide_sweep: only check LUT; for standard: check LUT + calibration data
+            need_search = (not os.path.exists(pruned_path)) if args.wide_sweep else \
+                          (not os.path.exists(pruned_path) or not os.path.exists(fitting_data_path))
+            if need_search:
+                sweep_desc = f"85-98% | {args.wide_step}% step" if args.wide_sweep else "85-95% | 0.1% step"
+                print(f"\n[INFO] Starting unified scan... ({sweep_desc})")
                 
                 # Unified call replacing previous two-function workflow
                 lut = construct_offline_policy_set(
@@ -2100,18 +2173,32 @@ def main(argv):
                 )
             else:
                 print(f"\n[INFO] All offline data found (LUT & calibration data).")
-                df_existing = pd.read_csv(pruned_path)
-                
+                # Load raw LUT if available; fall back to pruned (already monotonic)
+                raw_path = os.path.join(RESULTS_CSV, f"mp_policy_lut_{args.encoder}{lut_suffix}{nc_suffix}_raw.csv")
+                load_path = raw_path if os.path.exists(raw_path) else pruned_path
+                if load_path == pruned_path:
+                    print(f"[WARN] Raw LUT not found ({raw_path}). Using pruned (already monotonic) — raw/monotonic plots will look identical.")
+                else:
+                    print(f"[INFO] Raw LUT loaded for raw-vs-monotonic comparison.")
+                df_existing = pd.read_csv(load_path)
+
                 # Restore Policy column from string to dict (also Summary if present)
                 if 'Policy' in df_existing.columns and isinstance(df_existing['Policy'].iloc[0], str):
                     df_existing['Policy'] = df_existing['Policy'].apply(ast.literal_eval)
                 if 'Summary' in df_existing.columns and isinstance(df_existing['Summary'].iloc[0], str):
                     df_existing['Summary'] = df_existing['Summary'].apply(ast.literal_eval)
-                
+
                 # Convert to list of dicts for plot_offline_pareto
                 lut = df_existing.to_dict('records')
 
-            plot_offline_pareto(lut, args.encoder)
+            plot_offline_pareto(lut, args.encoder, lut_suffix=lut_suffix, nc_suffix=nc_suffix)
+
+            # Wide sweep: LUT + plot only (no calibration data for exp3/4)
+            if args.wide_sweep:
+                print(f"\n[INFO] Wide sweep complete. LUT saved → {pruned_path}")
+                print("[INFO] Skipping Exp 3/3.5/4 (wide sweep has no calibration data).")
+                return
+
             # --- [Step 3] Result visualization & validation (Exp 3) ---
             # Read generated mp_policy_lut..._pruned.csv and produce 4 performance graphs
             print("\n[INFO] Generating Exp 3 analysis graphs (Performance, Stability, CDF, Outage)...")
@@ -2119,13 +2206,13 @@ def main(argv):
 
             #verify_fc_quantization(net, "mp_policy_lut_mamba_pruned.csv", device)
             #inspect_layer_names(net, pruned_path)
-            
+
             print("\n[INFO] Step 3.5: Running rate-outage analysis...")
             rate_df = run_exp3_5_rate_outage_analysis(net, test_loader, pruned_path, device, train_set.normalization_params, args)
-        
+
             print("\n[INFO] Step 4: Running RP-MPQ online simulation...")
             ranc_df = run_exp4_rp_mpq_online(net, test_loader, pruned_path, device, rate_df, args)
-        
+
             print(f"\n[INFO] All analysis results for {args.encoder} are ready.")
             return
         
@@ -2143,27 +2230,40 @@ def main(argv):
 
         # ---------------------------------------------------------
         # FLOPs Measurement (Encoder & Total)
+        # Convention: BN/activation ops zeroed out (paper-consistent MACs)
         # ---------------------------------------------------------
         try:
             from thop import profile
+            import torch.nn as _nn
+
+            def _zero_ops(m, x, y):
+                m.total_ops += torch.zeros(1, dtype=torch.float64)
+
+            _zero_op_types = (
+                _nn.BatchNorm1d, _nn.BatchNorm2d, _nn.LayerNorm,
+                _nn.ReLU, _nn.LeakyReLU, _nn.Sigmoid, _nn.Tanh,
+                _nn.ReLU6, _nn.GELU, _nn.SiLU, _nn.Identity,
+            )
+            _custom_ops = {cls: _zero_ops for cls in _zero_op_types}
+
             print("\n" + "="*60)
-            print("[INFO] FLOPs Measurement")
-            
+            print("[INFO] FLOPs Measurement (BN/activation excluded)")
+
             # 1. Dummy input (same shape as latency measurement, batch=1)
             flops_input = torch.randn(1, 2, 32, 32).to(device)
-    
-            # 2. Encoder FLOPs (thop takes (model, inputs) tuple)
-            macs_enc, params_enc = profile(real_model.encoder, inputs=(flops_input, ), verbose=False)
-            
+
+            # 2. Encoder FLOPs
+            macs_enc, params_enc = profile(real_model.encoder, inputs=(flops_input,),
+                                           custom_ops=_custom_ops, verbose=False)
+
             # 3. Total (Encoder + Decoder) FLOPs
-            macs_total, params_total = profile(real_model, inputs=(flops_input, ), verbose=False)
-    
-            # 4. Print results (GMACs = MACs / 1e9)
-            # thop returns MACs; recent papers report MACs directly as GFLOPs(MACs)
-            print(f" - Encoder MACs:   {macs_enc / 1e9:.4f} G (Giga MACs)")
-            print(f" - Total MACs:     {macs_total / 1e9:.4f} G (Giga MACs)")
+            macs_total, params_total = profile(real_model, inputs=(flops_input,),
+                                               custom_ops=_custom_ops, verbose=False)
+
+            print(f" - Encoder MACs:   {macs_enc / 1e6:.2f} M")
+            print(f" - Total MACs:     {macs_total / 1e6:.2f} M")
             print("="*60)
-    
+
         except ImportError:
             print("[WARN] 'thop' library not installed. Skipping FLOPs measurement.")
             print("   -> Run '!pip install thop' to enable this.")
@@ -2244,7 +2344,7 @@ def main(argv):
         nmse = test_epoch_ae(epoch, test_loader, net, mse_loss, args, train_set.normalization_params, device)
         if nmse < best_nmse:
             best_nmse = nmse
-            if args.save: torch.save({"state_dict": net.state_dict(), "epoch": epoch}, f"{save_dir}/best.pth")
+            if args.save: torch.save({"state_dict": net.state_dict(), "epoch": args.start_epoch + epoch}, f"{save_dir}/best.pth")
 
 if __name__ == "__main__":
     main(sys.argv[1:])
