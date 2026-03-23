@@ -34,7 +34,7 @@
 % Title
 % --------------------
 \title{
-Reliability-Preserving Mixed-Precision Quantization Scheduling for Asymmetric CSI Feedback Autoencoders
+Contiguous-Segment Mixed-Precision Quantization for Asymmetric CSI Feedback Autoencoders
 }
 
 % --------------------
@@ -50,11 +50,11 @@ Email: \{hyunjae.park, wanchoi\}@snu.ac.kr}
 \maketitle
 
 \begin{abstract}
-In frequency-division duplex (FDD) massive multiple-input multiple-output (MIMO) systems, downlink CSI must be estimated at the user equipment (UE) and fed back to the base station (BS). In practice, UE-side inference is constrained by latency, energy, and compute, making lightweight encoders and low-precision execution unavoidable. Beyond reconstruction metrics such as normalized mean-squared error (NMSE), CSI distortion under UE constraints directly translates into transmission-rate degradation and outage events when the reconstructed CSI is used for precoding and link adaptation. To handle long-tailed delay--angular CSI under strict UE budgets, we propose an asymmetric CSI feedback autoencoder that employs a lightweight state-space model (SSM) encoder at the UE, exploiting soft locality and natural quantization robustness, paired with a high-capacity Transformer decoder at the BS. Building on this architecture, we develop Reliability-Preserving Mixed-Precision Quantization Scheduling (RP-MPQ): a state-conditioned importance surface quantifies the expected downstream reliability shortfall from each block-bit assignment given the wireless operating state; offline, per-state optimal mixed-precision policies are constructed from this surface under a long-term UE compute budget, and online deployment reduces to a single table lookup with no runtime optimization. Experimental results demonstrate that the proposed asymmetric architecture improves the accuracy--complexity trade-off and that RP-MPQ substantially reduces rate-based outage events under the same average UE-side budget.
+In frequency-division duplex (FDD) massive multiple-input multiple-output (MIMO) systems, downlink CSI must be estimated at the user equipment (UE) and fed back to the base station (BS). In practice, UE-side inference is constrained by latency, energy, and compute, making lightweight encoders and low-precision execution unavoidable. To handle long-tailed delay--angular CSI under strict UE budgets, we propose an asymmetric CSI feedback autoencoder that employs a lightweight state-space model (SSM) encoder at the UE, exploiting soft locality and natural quantization robustness, paired with a high-capacity Transformer decoder at the BS. Building on this architecture, we develop an interaction-aware segment-level mixed-precision quantization framework: a state-conditioned importance surface quantifies the segment-level degradation from contiguous-group perturbation of encoder blocks; in aggressive compression regimes where multiple blocks are simultaneously assigned low precision, segment-level perturbation captures inter-block interactions that per-block additive analysis may underestimate. Offline, segment-level dynamic programming constructs optimal contiguous segmentation policies under a fixed UE compute budget, and online deployment reduces to a single table lookup with no runtime optimization. A lightweight structural descriptor $\zeta$ conditions the degradation analysis on the wireless operating state, discriminating encoder-friendly and encoder-hostile CSI realizations with a 3.3\,dB NMSE spread. Experimental results demonstrate that the proposed asymmetric architecture improves the accuracy--complexity trade-off: at 93\% encoder BOPs saving, MT-AE achieves $-12.69$\,dB NMSE through the proposed Segment DP framework while CRNet collapses to $-6.79$\,dB under per-block ILP, a gap exceeding 5.9\,dB. Segment DP yields up to 0.8\,dB NMSE improvement over per-block integer linear programming under the same compute budget. An outage-aware extension, Joint DP, further optimises per-state budget allocation across channel conditions, shifting the outage cliff to higher savings at no additional NMSE cost.
 \end{abstract}
 
 \begin{IEEEkeywords}
-CSI feedback, mixed-precision quantization, reliability, massive MIMO, state-space model, UE-side inference
+CSI feedback, mixed-precision quantization, segment-level quantization, interaction-aware, massive MIMO, state-space model
 \end{IEEEkeywords}
 
 % =========================================================
@@ -64,27 +64,29 @@ CSI feedback, mixed-precision quantization, reliability, massive MIMO, state-spa
 \subsection{Background and Motivation}
 In frequency-division duplex (FDD) massive multiple-input multiple-output (MIMO) systems, CSI feedback is essential for downlink precoding and rate adaptation. Unlike time-division duplex systems, FDD operation does not permit channel reciprocity; therefore, the UE must estimate downlink CSI and convey a compressed representation to the BS over a limited feedback link. Recent deep-learning-based CSI feedback methods employ autoencoders to learn compact latent representations that can be quantized and transmitted efficiently \cite{CsiNet,CsiNetPlus,CRNet,CLNet,TransNet,ACCsiNet}.
 
-A practical bottleneck is UE-side feasibility at inference time. CSI compression must operate under strict latency and energy constraints, which often forces lightweight encoder architectures and low-precision execution. Under such operation, CSI distortion is unavoidable and its impact is not limited to reconstruction error: distorted CSI directly affects downlink transmission rates and increases outage events when used for precoding and link adaptation \cite{Jindal2006}. This motivates CSI feedback designs that explicitly account for transmission-rate-based reliability, rather than optimizing reconstruction metrics alone.
+A practical bottleneck is UE-side feasibility at inference time. CSI compression must operate under strict latency and energy constraints, which often forces lightweight encoder architectures and low-precision execution. Under such operation, CSI distortion is unavoidable and its impact is not limited to reconstruction error: distorted CSI directly affects downlink transmission rates when used for precoding and link adaptation \cite{Jindal2006}. This motivates CSI feedback designs that jointly optimize the encoder architecture for quantization robustness and the mixed-precision policy for interaction-aware degradation control.
 
 \subsection{Asymmetric CSI Feedback Architecture}
 In the delay--angular domain, CSI often exhibits localized energy around dominant propagation paths while retaining non-negligible long-range components due to off-grid effects and finite DFT resolution. Encoders that impose hard locality (e.g., limited receptive fields) may effectively truncate such components under strict budgets, incurring irreversible structural loss. In contrast, state-space model (SSM) encoders aggregate inputs through soft memory with exponentially decaying influence, allowing long-range dependencies to be attenuated rather than abruptly truncated. Moreover, SSM encoders with contractive state dynamics provide natural robustness to low-precision execution. Recent work also highlights emerging SSM opportunities in wireless communications \cite{Mamba,MambaWireless}.
 
 Motivated by this structural match and the inherent UE--BS computational asymmetry, we propose an asymmetric CSI feedback architecture that places a lightweight SSM-based encoder at the UE and a higher-capacity Transformer decoder at the BS.
 
-\subsection{Reliability-Preserving Mixed-Precision Quantization}
-On top of the fixed asymmetric architecture, we develop Reliability-Preserving Mixed-Precision Quantization Scheduling (RP-MPQ), which enables runtime, reliability-aware precision adaptation with minimal online complexity.
+\subsection{Interaction-Aware Mixed-Precision Quantization}
+On top of the fixed asymmetric architecture, we develop an interaction-aware segment-level mixed-precision quantization framework, which constructs optimal precision assignments with minimal online complexity.
 
-RP-MPQ defines a state-conditioned importance surface that measures the expected downstream reliability shortfall from each block-bit assignment, conditioned on a wireless state summarizing SNR and CSI structure. Offline, this surface determines per-state optimal mixed-precision policies under a compute budget; online, the UE performs a single table lookup to deploy the pre-computed policy with no runtime optimization.
+The framework defines a state-conditioned importance surface that measures the segment-level degradation from contiguous-group perturbation of encoder blocks, conditioned on a wireless state summarizing SNR and CSI structure. Per-block perturbation---where a single block is quantised while all others remain at anchor precision---provides a tractable additive approximation that is often sufficient at moderate compression levels. However, in aggressive compression regimes where multiple blocks are simultaneously assigned low precision, joint degradation effects may emerge that the additive model underestimates; segment-level perturbation captures these inter-block interactions. Offline, segment-level dynamic programming constructs optimal contiguous segmentation policies under a fixed compute budget. Online, the UE performs a single table lookup to deploy the pre-computed policy with no runtime optimization.
 
 \subsection{Contributions}
 The main contributions of this paper are:
 \begin{itemize}
-\item An asymmetric CSI feedback autoencoder using a lightweight SSM-based UE encoder and a high-capacity BS decoder, exploiting soft locality and contractive state dynamics for quantization-robust compression of long-tailed delay--angular CSI.
-\item RP-MPQ, a state-conditioned importance framework that constructs per-state optimal mixed-precision policies offline from a downstream reliability shortfall surface, with online deployment via pure table lookup under a long-term UE budget.
+\item An asymmetric SSM--Transformer CSI feedback architecture that pairs a lightweight Mamba encoder at the UE with a Transformer decoder at the BS, providing strong quantisation robustness through contractive state dynamics.
+\item \emph{Segment DP}: a segment-level interaction-aware mixed-precision formulation with dynamic programming; contiguous joint perturbation captures inter-block degradation that per-block additive analysis underestimates in aggressive compression regimes, and a dynamic program finds the optimal contiguous segmentation under a fixed compute budget, yielding up to 0.8\,dB improvement over per-block ILP.
+\item \emph{Joint DP}: an outage-aware extension that optimises per-state budget allocation across channel conditions (indexed by the structural descriptor $\zeta$), improving outage probability at no additional NMSE cost by redistributing compute toward difficult channels.
+\item A lightweight structural descriptor $\zeta$ that discriminates encoder-friendly and encoder-hostile CSI realizations (3.3\,dB NMSE spread), enabling state-conditioned degradation analysis with $\mathcal{O}(1)$ online complexity.
 \end{itemize}
 
 \noindent
-The remainder of the paper is organized as follows. Section~\ref{sec:system_model} describes the system model. Section~\ref{sec:asym_arch} presents the asymmetric architecture. Sections~\ref{sec:offline} and~\ref{sec:online} develop the offline and online stages of RP-MPQ, respectively. Section~\ref{sec:experiments} reports experimental results, and Section~\ref{sec:conclusion} concludes.
+The remainder of the paper is organized as follows. Section~\ref{sec:system_model} describes the system model. Section~\ref{sec:asym_arch} presents the asymmetric architecture. Sections~\ref{sec:offline} and~\ref{sec:online} develop the offline and online stages of the mixed-precision framework, respectively. Section~\ref{sec:experiments} reports experimental results, and Section~\ref{sec:conclusion} concludes.
 
 % =========================================================
 \section{System Model and Problem Formulation}
@@ -146,7 +148,7 @@ In practical deployments, CSI feedback is constrained by UE-side latency, energy
 We study the joint design of:
 \begin{enumerate}
 \item a UE-feasible asymmetric encoder--decoder architecture that improves the accuracy--complexity trade-off; and
-\item a runtime mixed-precision scheduling mechanism for the UE-side encoder that suppresses transmission-rate-based reliability violations under a long-term average UE compute budget.
+\item an interaction-aware segment-level mixed-precision quantization framework for the UE-side encoder that minimises distortion under a fixed UE compute budget.
 \end{enumerate}
 Section~\ref{sec:asym_arch} describes the architecture, and Sections~\ref{sec:offline}--\ref{sec:online} develop the mixed-precision scheduling framework.
 
@@ -249,33 +251,29 @@ The UE encoder benefits from SSM's linear-time complexity and quantization robus
 This asymmetry is a practical design choice matched to the CSI feedback channel's inherent compute imbalance between UE and BS.
 
 % =========================================================
-\section{RP-MPQ: Offline Policy Construction}
+\section{Interaction-Aware Mixed-Precision Quantization: Offline Policy Construction}
 \label{sec:offline}
 % =========================================================
 
-This section develops the offline stage of RP-MPQ. A \emph{policy} $\pi=(b_1,\ldots,b_M)$ assigns bit-widths $b_m\in\mathcal{B}$ to the $M$ quantizable encoder blocks. Mixed precision is applied to encoder weights while activations remain fixed at INT16. The feedback-link quantization $Q_{\mathrm{fb}}(\cdot)$ in \eqref{eq:latent_quant} is kept fixed. RP-MPQ constructs a \emph{state-conditioned importance surface} measuring the expected downstream reliability loss from each block-bit assignment, and derives per-state optimal policies from this surface.
+This section develops the offline stage of the mixed-precision framework. The UE-side encoder contains $M$ quantizable blocks (contiguous parameter groups in the FC bottleneck layer). Mixed precision is applied to encoder weights while activations remain fixed at INT16. The feedback-link quantization $Q_{\mathrm{fb}}(\cdot)$ in \eqref{eq:latent_quant} is kept fixed. The framework constructs a \emph{state-conditioned importance surface} by measuring segment-level importance from contiguous-group perturbation, and derives optimal contiguous segmentation policies from this surface via dynamic programming.
 
 \subsection{Mixed-Precision Policy Space}
 \label{subsec:policy_space}
 
-Let the UE-side encoder consist of $M$ quantizable blocks. A mixed-precision policy is a block-wise assignment of bit-widths
+Let the UE-side encoder consist of $M$ quantizable blocks (contiguous parameter groups in the FC bottleneck layer). A \emph{policy} $\pi=\{(S_q,b_q)\}_{q=1}^{Q}$ assigns bit-widths $b_q\in\mathcal{B}$ to contiguous segments $S_q$ forming a partition of the $M$ quantizable FC chunks in the encoder bottleneck, with normalized cost
 \begin{equation}
-\pi \triangleq (b_1, b_2, \ldots, b_M),
-\label{eq:policy_def}
+\kappa_\pi = \sum_{q=1}^{Q} \kappa(S_q, b_q) \in (0,1],
+\label{eq:kappa_policy_sum}
 \end{equation}
-where $b_m \in \mathcal{B}$ and $\mathcal{B}$ denotes the discrete set of supported bit-widths. The induced policy space has cardinality
+where $\kappa(S_q, b_q)$ denotes the compute cost of executing segment $S_q$ at bit-width $b_q$ (e.g., BOPs), normalized such that $\kappa_{\pi^{(\mathrm{FP32})}}=1$, and $\mathcal{B}$ denotes the discrete set of supported bit-widths.
+
+As a special case, block-wise assignment $\pi=(b_1,\ldots,b_M)$ treats each block as a singleton segment.
+The induced block-wise policy space has cardinality
 \begin{equation}
 |\Pi| = |\mathcal{B}|^M,
 \label{eq:policy_cardinality}
 \end{equation}
 which makes exhaustive evaluation infeasible for moderate $M$.
-
-For a policy $\pi$, the normalized UE-side cost is
-\begin{equation}
-\kappa_{\pi} \triangleq \sum_{m=1}^{M} \kappa_m(b_m) \in (0,1],
-\label{eq:kappa_policy_sum}
-\end{equation}
-where $\kappa_m(b_m)$ denotes the compute cost of executing block $m$ at bit-width $b_m$ (e.g., BOPs), normalized such that $\kappa_{\pi^{(\mathrm{FP32})}}=1$.
 
 \subsection{Wireless State}
 \label{subsec:wireless_state}
@@ -351,56 +349,79 @@ $(\lambda_d^*, \lambda_a^*) = \argmin_{\lambda_d + \lambda_a = 1} \sum_{i}(\zeta
 or more directly by maximizing Spearman rank correlation with $\zeta_{\mathrm{full}}$.
 This data-driven extension is left for future investigation.
 
-\subsection{Downstream Reliability Shortfall}
+\subsection{Distortion Metric}
 \label{subsec:shortfall}
 
-Let $\pi_{\mathrm{anc}}$ denote a high-precision anchor policy with reference rate $r_i^{\mathrm{ref}}=r(\mathbf{X}_i;\pi_{\mathrm{anc}})$.
-For reliability target $\gamma\in(0,1)$, the normalized shortfall under policy $\pi$ is
+Let $\pi_{\mathrm{anc}}$ denote a high-precision anchor policy.
+The distortion metric used for importance measurement is the NMSE delta:
+
+\textbf{NMSE delta.}
+The NMSE increase under policy $\pi$ relative to the anchor is
+\begin{equation}
+\Delta L_i(\pi) = \mathrm{NMSE}_i(\pi) - \mathrm{NMSE}_i(\pi_{\mathrm{anc}}),
+\label{eq:nmse_delta}
+\end{equation}
+which directly measures reconstruction degradation and serves as the optimisation objective throughout the framework.
+
+\textbf{Remark} (alternative metrics).
+We also investigated a rate-based reliability shortfall
 \begin{equation}
 V_i(\pi;\gamma) = \frac{[\gamma\, r_i^{\mathrm{ref}} - r_i(\pi)]_+}{\gamma\, r_i^{\mathrm{ref}} + \eta_r},
 \label{eq:shortfall}
 \end{equation}
-where $[\cdot]_+=\max(\cdot,0)$ and $\eta_r>0$ prevents division by zero.
-This single primitive naturally captures both NMSE-sensitive and rate-critical regimes without manual switching: when quantization is mild, shortfall penalizes NMSE-like degradation; under aggressive quantization, it captures beam-critical rate violations.
+where $r_i^{\mathrm{ref}}$ is the reference rate under the anchor and $\gamma\in(0,1)$ is a reliability target.
+In our experiments, shortfall-based and NMSE-delta-based policies produced comparable results for the single-user system considered here; shortfall may offer additional benefits in multi-user scenarios where per-user rate guarantees are required.
+
+We write $\Delta\ell_i(\pi)$ generically for the chosen distortion increase, and the importance framework proceeds identically regardless of metric choice.
 
 \subsection{State-Conditioned Importance Surface}
 \label{subsec:importance_surface}
 
-Let $\pi^{(m\to b)}$ denote the policy changing only block $m$ to bit-width $b$ while keeping all others at anchor precision. The marginal shortfall increase is
-\begin{equation}
-\Delta V_i(m,b;\gamma) = V_i(\pi^{(m\to b)};\gamma) - V_i(\pi_{\mathrm{anc}};\gamma).
-\label{eq:marginal_shortfall}
-\end{equation}
-The state-conditioned importance surface is defined as
-\begin{equation}
-\Omega_{m,b}(\boldsymbol{\xi}) \triangleq \E\!\left[
-\Delta V_i(m,b;\gamma) \Given \boldsymbol{\xi}_i = \boldsymbol{\xi}
-\right],
-\label{eq:importance_surface}
-\end{equation}
-measuring the expected reliability loss increase from assigning block $m$ to bit-width $b$, conditioned on wireless state $\boldsymbol{\xi}=(\rho,\zeta)$.
+\textbf{Why segment-level perturbation.}
+Per-block perturbation---where a single encoder block is quantised while all others remain at anchor precision---provides a tractable additive approximation of quantisation sensitivity. At moderate compression levels, this approximation is often sufficient. However, in aggressive compression regimes where multiple blocks are simultaneously assigned low precision, joint degradation effects may emerge that the additive model underestimates. In particular, the nonlinear sensitivity of beamforming gain to directional CSI errors only manifests when multiple blocks are simultaneously perturbed. To capture such interactions, we adopt segment-level perturbation.
 
-This is the core quantity of RP-MPQ. Because $\Omega_{m,b}(\boldsymbol{\xi})$ is conditioned on both SNR and CSI structure, it automatically encodes regime-dependent behavior: blocks that are NMSE-sensitive under high SNR and blocks that are rate-critical under diffuse structure are distinguished by the surface without manual regime separation.
+\textbf{Segment-level perturbation.}
+To capture inter-block interactions, we perturb contiguous \emph{segments} $S=[l{:}r)$ of consecutive blocks simultaneously.
+Let $\pi^{(S\to b)}$ denote the policy that assigns all blocks in segment $S$ to bit-width $b$ while keeping the remaining blocks at anchor precision.
+The segment-level distortion increase is
+\begin{equation}
+\Delta\ell_i(S,b) = \Delta\ell_i(\pi^{(S\to b)}),
+\label{eq:segment_delta}
+\end{equation}
+where $\Delta\ell_i$ is the chosen distortion metric (NMSE delta or shortfall).
+Because multiple blocks are perturbed simultaneously, the resulting error enters the nonlinear regime in which directional CSI errors disproportionately degrade beamforming gain---an effect that single-block perturbation may underestimate.
+
+The state-conditioned segment importance surface is defined as
+\begin{equation}
+\widehat{\Omega}_S(\boldsymbol{\xi}; b) \triangleq \E\!\left[
+\Delta\ell_i(S,b) \Given \boldsymbol{\xi}_i = \boldsymbol{\xi}
+\right],
+\label{eq:segment_omega}
+\end{equation}
+measuring the expected distortion increase from assigning segment $S$ to bit-width $b$, conditioned on wireless state $\boldsymbol{\xi}=(\rho,\zeta)$.
+
+This is the core quantity of the framework. Because $\widehat{\Omega}_S(\boldsymbol{\xi}; b)$ is conditioned on both SNR and CSI structure, it automatically encodes regime-dependent behavior: segments that are NMSE-sensitive under high SNR and segments whose degradation is amplified under diffuse structure are distinguished by the surface without manual regime separation.
 
 \subsection{Importance Estimation}
 \label{subsec:estimation}
 
 The state space $(\rho,\zeta)$ is discretized into a $J\times K$ grid of quantile cells $\{C_{j,k}\}$, with $J$ bins along $\rho$ and $K$ bins along $\zeta$.
+For each candidate segment $S=[l{:}r)$ with $|S|\le L_{\max}$ and each bit-width $b\in\mathcal{B}$, the segment importance is estimated from the profiling data.
 
 \textbf{Raw estimator.}
-Within each cell $(j,k)$, the raw importance is the cell-wise average:
+Within each cell $(j,k)$, the raw segment importance is the cell-wise average:
 \begin{equation}
-\widehat{\Omega}_{m,b}^{\mathrm{raw},(j,k)} = \frac{1}{N_{jk}} \sum_{i:\,\boldsymbol{\xi}_i\in C_{j,k}} \Delta V_i(m,b;\gamma).
+\widehat{\Omega}_{S,b}^{\mathrm{raw},(j,k)} = \frac{1}{N_{jk}} \sum_{i:\,\boldsymbol{\xi}_i\in C_{j,k}} \Delta\ell_i(S,b).
 \label{eq:raw_omega}
 \end{equation}
 
 \textbf{Shrinkage stabilization.}
-For cells with limited samples, we shrink toward the global block-bit mean:
+For cells with limited samples, we shrink toward the global segment-bit mean:
 \begin{equation}
-\widehat{\Omega}_{m,b}^{(j,k)} = \alpha_{jk}\,\widehat{\Omega}_{m,b}^{\mathrm{raw},(j,k)} + (1-\alpha_{jk})\,\bar{\Omega}_{m,b},
+\widehat{\Omega}_{S,b}^{(j,k)} = \alpha_{jk}\,\widehat{\Omega}_{S,b}^{\mathrm{raw},(j,k)} + (1-\alpha_{jk})\,\bar{\Omega}_{S,b},
 \label{eq:shrinkage}
 \end{equation}
-where $\bar{\Omega}_{m,b} = \frac{1}{N}\sum_{i=1}^{N}\Delta V_i(m,b;\gamma)$ is the global mean and $\alpha_{jk}=N_{jk}/(N_{jk}+\tau_{\mathrm{shr}})$ controls shrinkage intensity.
+where $\bar{\Omega}_{S,b} = \frac{1}{N}\sum_{i=1}^{N}\Delta\ell_i(S,b)$ is the global mean and $\alpha_{jk}=N_{jk}/(N_{jk}+\tau_{\mathrm{shr}})$ controls shrinkage intensity.
 
 \textbf{Monotone calibration.}
 A 2-D isotonic calibration is applied to enforce physical monotonicity:
@@ -408,30 +429,41 @@ A 2-D isotonic calibration is applied to enforce physical monotonicity:
 \item \emph{Nonincreasing in $\rho$}: higher SNR reduces quantization sensitivity.
 \item \emph{Nondecreasing in $\zeta$}: diffuse CSI structure increases quantization sensitivity.
 \end{itemize}
-At runtime, bilinear interpolation or direct cell lookup yields $\widehat{\Omega}_{m,b}(\boldsymbol{\xi}_t)$.
+At runtime, bilinear interpolation or direct cell lookup yields $\widehat{\Omega}_{S,b}(\boldsymbol{\xi}_t)$.
 
-\subsection{State-Wise Policy Optimization}
+\subsection{Policy Optimization via Dynamic Programming}
 \label{subsec:policy_opt}
 
-Under an additive surrogate assumption, the optimal policy for each state cell minimizes
+Given the segment importance surface $\widehat{\Omega}_S(\boldsymbol{\xi}; b)$ constructed in Section~\ref{subsec:importance_surface} and a fixed compute budget~$c$, the optimal contiguous segmentation is found by dynamic programming:
 \begin{equation}
-\pi^*(\boldsymbol{\xi}) = \argmin_{\pi\in\Pi}\left[
-\sum_{m=1}^{M} \widehat{\Omega}_{m,\pi_m}(\boldsymbol{\xi}) + \lambda\,\kappa_\pi
-\right],
-\label{eq:policy_opt}
+F(m,c) = \min_{\substack{0\le l < m \\ b\in\mathcal{B}}}
+\Big[F(l,\;c{-}\kappa_{[l:m)}^{(b)}) + \widehat{\Omega}_{[l:m)}(\boldsymbol{\xi};b)\Big],
+\label{eq:dp}
 \end{equation}
-where $\lambda\ge 0$ balances reliability loss against compute cost.
-The Lagrange multiplier $\lambda$ is calibrated offline via bisection to satisfy the long-term budget constraint $\E[\kappa_{\pi_t}]\le\bar{c}$.
+with base case $F(0,c)=0$ for all $c\ge 0$, where $\kappa_{[l:m)}^{(b)}$ is the normalised BOPs cost of segment $[l{:}m)$ at precision~$b$.
+The DP runs in $\mathcal{O}(M^2 |\mathcal{B}| C)$ time, where $C$ is the budget discretisation granularity.
+Unlike per-block ILP, this formulation naturally respects the contiguous structure of the FC weight matrix and captures the interaction effects measured by $\widehat{\Omega}_S$.
 
-Since the additive surrogate decouples across blocks, the per-state optimization in \eqref{eq:policy_opt} decomposes into $M$ independent block-level minimizations for a given $\lambda$, yielding $\mathcal{O}(M|\mathcal{B}|)$ complexity per state cell. The complete offline stage produces a state-to-policy map
+The offline stage produces a state-to-policy lookup table
 \begin{equation}
-\mu(\boldsymbol{\xi}) = \pi^*(\boldsymbol{\xi}),
+\mu(\boldsymbol{\xi}, \bar{c}) = \pi^*(\boldsymbol{\xi}),
 \label{eq:policy_map}
 \end{equation}
-stored as a lookup table over the $J\times K$ grid.
+mapping each wireless state and budget level to the optimal contiguous segmentation and per-segment precision assignment.
+
+\textbf{Joint DP: outage-aware budget allocation.}
+The Segment DP framework admits a natural outer budget allocation that we term \emph{Joint DP}. The inner Segment DP produces a distortion--budget curve $D_j(c) = F_j(M,c)$ for each state cell~$j$. An outer problem distributes a system-wide average budget~$\bar{c}$ across state cells:
+\begin{equation}
+\min_{\{c_j\}}\;\sum_{j=1}^{J} p_j\, D_j(c_j)
+\qquad\text{s.t.}\quad
+\sum_{j=1}^{J} p_j\, c_j \le \bar{c},
+\label{eq:outer}
+\end{equation}
+where $p_j$ is the fraction of samples in bin~$j$.
+This water-filling-like allocation redistributes compute toward difficult channel conditions (high $\zeta$), improving outage probability at no additional NMSE cost. Section~\ref{subsec:offline_ablation} validates this extension experimentally.
 
 % =========================================================
-\section{RP-MPQ: Online Deployment}
+\section{Online Deployment}
 \label{sec:online}
 % =========================================================
 
@@ -442,11 +474,11 @@ Given the offline-constructed policy map $\mu$ in \eqref{eq:policy_map}, the UE 
 
 At runtime, the UE computes the current wireless state $\boldsymbol{\xi}_t=(\rho_t,\zeta(\mathbf{X}_t))$, looks up the pre-computed policy $\pi_t=\mu(\boldsymbol{\xi}_t)$, and executes the encoder under the selected mixed-precision policy.
 No online optimization is performed: the entire adaptation is reduced to a single table lookup.
-Algorithm~\ref{alg:online_rpmpq} summarizes the procedure.
+Algorithm~\ref{alg:online_deploy} summarizes the procedure.
 
 \begin{algorithm}[t]
-\caption{RP-MPQ: Online Policy Deployment}
-\label{alg:online_rpmpq}
+\caption{Online Policy Deployment}
+\label{alg:online_deploy}
 \begin{algorithmic}[1]
 \REQUIRE CSI $\mathbf{X}_a$, SNR $\rho_t$, offline policy map $\mu$
 \STATE Compute $\zeta_t = \zeta(\mathbf{X}_a)$ via \eqref{eq:struct_state}
@@ -460,13 +492,13 @@ Algorithm~\ref{alg:online_rpmpq} summarizes the procedure.
 \subsection{Online Complexity}
 \label{subsec:online_complexity}
 
-The online cost consists of computing $\zeta(\mathbf{X}_t)$ via \eqref{eq:struct_state} ($\mathcal{O}(N_a N_t + N_a^2 + N_t^2)$ for the proxy; see Table~\ref{tab:zeta_runtime}) and a table lookup ($\mathcal{O}(1)$), both negligible relative to encoder inference. Therefore, RP-MPQ enables reliability-aware mixed-precision adaptation with no measurable overhead.
+The online cost consists of computing $\zeta(\mathbf{X}_t)$ via \eqref{eq:struct_state} ($\mathcal{O}(N_a N_t + N_a^2 + N_t^2)$ for the proxy; see Table~\ref{tab:zeta_runtime}) and a table lookup ($\mathcal{O}(1)$), both negligible relative to encoder inference. Therefore, the framework enables interaction-aware mixed-precision adaptation with no measurable overhead.
 
 % =========================================================
 \section{Experimental Results}
 \label{sec:experiments}
 % =========================================================
-This section validates the proposed asymmetric CSI feedback framework with RP-MPQ along three dimensions: (i) structural efficiency of the asymmetric UE encoder, (ii) effectiveness of the offline mixed-precision policy construction, and (iii) reliability-aware online adaptation under identical long-term average UE-side compute budgets.
+This section validates the proposed asymmetric CSI feedback framework along three dimensions: (i) structural efficiency of the asymmetric UE encoder, (ii) effectiveness of segment-level dynamic programming versus per-block ILP, and (iii) the $\zeta$ descriptor's ability to discriminate degradation regimes under identical fixed UE-side compute budgets.
 
 \subsection{Experimental Setup}
 \label{subsec:exp_setup}
@@ -497,7 +529,7 @@ Optimizer & AdamW, lr $10^{-3}$, 200 epochs, batch 1000 \\
 Weight precision & 16 / 8 / 4 / 2 bit (mixed) \\
 Activation precision & 16-bit (internal), 8-bit (latent) \\
 Saving range $\mathcal{S}$ & 85--97\% vs.\ FP32, step 0.05\% \\
-Reliability target $\gamma$ & 0.99 / 0.98 / 0.95 \\
+Outage threshold $\gamma$ & 0.99 / 0.98 / 0.95 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -531,7 +563,8 @@ TransNet & -14.86 & 17.83 &  35.72 \\
 We evaluate uniform weight quantization under INT16/INT8/INT4 at $\mathrm{CR}=1/4$.
 Table~\ref{tab:uniform_quant_cr4} reports NMSE and encoder BOPs for each precision level.
 Fig.~\ref{fig:uniform_rpmpq}(a) visualizes the accuracy--efficiency trade-off: MT-AE retains near-lossless NMSE down to INT8 ($87.5\%$ BOPs saving), whereas the CNN baselines degrade sharply beyond INT16.
-Fig.~\ref{fig:uniform_rpmpq}(b) shows the offline RP-MPQ Pareto frontier, where MT-AE consistently achieves the best NMSE--efficiency trade-off across the full saving range.
+Fig.~\ref{fig:uniform_rpmpq}(b) shows the offline mixed-precision Pareto frontier, where MT-AE consistently achieves the best NMSE--efficiency trade-off across the full saving range.
+Fig.~\ref{fig:segment_dp_all_models} extends this comparison to all architectures under the proposed Segment DP framework, confirming that MT-AE maintains its advantage across the full saving range.
 This robustness gap motivates the mixed-precision strategy developed in Sections~\ref{subsec:offline_ablation} and \ref{subsec:online_outage}.
 
 \begin{table}[t]
@@ -568,26 +601,46 @@ CLNet  & INT16 & $-12.82$ & 268.69 & 75.00 \\
 \caption{NMSE under varying BOPs saving relative to FP32 ($\mathrm{CR}=1/4$, outdoor).
 (a)~Uniform weight quantization (activations fixed at INT16):
 MT-AE maintains near-lossless NMSE up to $87.5\%$ saving (INT8), whereas CNN baselines collapse beyond INT16.
-(b)~Offline RP-MPQ Pareto frontier ($85$--$97\%$ saving): MT-AE achieves the best NMSE--efficiency trade-off across the full range.}
+(b)~Offline mixed-precision Pareto frontier ($85$--$97\%$ saving): MT-AE achieves the best NMSE--efficiency trade-off across the full range.}
 \label{fig:uniform_rpmpq}
 \end{figure*}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\columnwidth]{figures/fig_segment_dp_all_models.pdf}
+\caption{Segment DP Pareto frontier across all architectures ($\mathrm{CR}=1/4$, outdoor). MT-AE maintains the best NMSE--efficiency trade-off; at 93\% saving, MT-AE achieves $-12.69$\,dB while CRNet degrades to $-6.79$\,dB.}
+\label{fig:segment_dp_all_models}
+\end{figure}
 
 
-\subsection{Ablation: Importance Surface Validation}
+\subsection{Segment DP vs.\ HAWQ-ILP and Joint DP Extension}
 \label{subsec:offline_ablation}
-We evaluate the effectiveness of the state-conditioned importance surface in the offline stage. Fig.~\ref{fig:kl_vs_ilp} compares the additive importance surrogate ranking with full end-to-end NMSE measurement under identical BOP budgets. The importance-surface-based policy construction improves agreement between surrogate ranking and observed end-to-end distortion, reducing inconsistencies due to inter-block interaction effects not captured by block-separable approximations.
+
+Fig.~\ref{fig:kl_vs_ilp} presents a two-panel ablation comparing the proposed DP-based methods against baselines on MT-AE.
+
+\textbf{Panel~(a): NMSE improvement via Segment DP.}
+Panel~(a) compares the per-layer HAWQ-ILP baseline with the proposed Segment DP.
+HAWQ-ILP treats each layer independently, whereas Segment DP captures inter-block interactions via contiguous-segment dynamic programming under the BOPs budget.
+Segment DP consistently achieves lower NMSE, with the gap widening beyond $90\%$ saving where multiple blocks are simultaneously assigned low precision.
+Joint DP, which redistributes compute across $\zeta$ bins, achieves nearly identical NMSE to Segment DP, confirming that the outage-aware allocation incurs no additional distortion cost.
+
+\textbf{Panel~(b): Outage improvement via Joint DP.}
+Panel~(b) extends to the outage dimension ($\gamma=0.99$, SNR${}=20$\,dB): we compare the Segment DP policy with equal budget allocation across all $\zeta$ bins against Joint DP, which additionally optimises the per-state budget allocation to minimise population-weighted outage under an average compute constraint.
+Joint DP shifts the outage cliff to higher savings by redistributing compute budget toward difficult channel conditions (high $\zeta$), demonstrating that outage-aware allocation provides meaningful improvement at no additional NMSE cost.
+Table~\ref{tab:budget_validation} confirms budget consistency.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.95\columnwidth]{figures/kl_vs_ilp.pdf}
-\caption{Discrepancy between surrogate-predicted and measured NMSE across BOPs-saving budgets ($\mathrm{CR}=1/4$, outdoor). The gap is negligible below $93\%$ saving but reaches $1.97$\,dB near the high-saving boundary.}
+\caption{Ablation on MT-AE ($\mathrm{CR}=1/4$, outdoor).
+(a)~NMSE: Segment DP (proposed) vs.\ per-layer HAWQ-ILP and Joint DP; Segment DP consistently achieves the lowest NMSE, with the gap over HAWQ-ILP widening beyond $90\%$ saving. Joint DP overlaps Segment DP, confirming no additional NMSE cost.
+(b)~Outage ($\gamma=0.99$, SNR${}=20$\,dB): Joint DP (outage-aware per-state budget allocation) vs.\ Segment DP with equal allocation across $\zeta$ bins; Joint DP shifts the outage cliff from $87\%$ to $88\%$ saving by redistributing compute toward difficult channels.}
 \label{fig:kl_vs_ilp}
 \end{figure}
 
-\subsection{Online RP-MPQ: Reliability under Identical Budgets}
+\subsection{Outage Performance under Identical Budgets}
 \label{subsec:online_outage}
-We compare uniform precision, static mixed precision (offline-only), and online RP-MPQ under identical \emph{average} UE-side encoder BOP budgets. Reliability is evaluated via outage probability under targets $\gamma \in \{0.99, 0.98, 0.95\}$ at SNR levels of 10, 20, and 30~dB.
+We compare uniform precision, static mixed precision (offline-only), and the proposed Segment DP framework under identical fixed UE-side encoder BOP budgets. Performance is evaluated via outage probability under targets $\gamma \in \{0.99, 0.98, 0.95\}$ at SNR levels of 10, 20, and 30~dB. To highlight the cross-architecture advantage of our framework, we also compare against per-block ILP applied to CNN-based encoders (CRNet, CLNet, CsiNet) under identical saving levels.
 
 \subsubsection{Transmission Rate and Outage Definition}
 To compute per-subcarrier MRT precoding, the reconstructed delay--angular CSI $\hat{\mathbf{X}}_a$ is mapped back to the frequency domain by inverse angular transforms and a DFT across delay taps. Specifically, we form $\hat{\mathbf{H}}_d[\ell]=\mathbf{F}_r^{\mathsf{H}}\hat{\mathbf{X}}[\ell]\mathbf{F}_t$ for $\ell=0,\ldots,N_a-1$, zero-pad $\hat{\mathbf{H}}_d[\ell]=\mathbf{0}$ for $\ell\ge N_a$, and compute $\hat{\mathbf{H}}[n]=\frac{1}{\sqrt{N_f}}\sum_{\ell=0}^{N_f-1}\hat{\mathbf{H}}_d[\ell]e^{-j2\pi n\ell/N_f}$. For $N_r=1$, the corresponding channel vector is $\hat{\mathbf{h}}[n]\in\mathbb{C}^{N_t}$. For the $t$-th CSI realization, the achievable rate is defined as
@@ -606,24 +659,34 @@ r_t(\pi) < \gamma\, r_t^{\mathrm{ref}}.
 \label{eq:outage_event}
 \end{equation}
 
-\subsubsection{Outage Performance under Online RP-MPQ}
-Fig.~\ref{fig:outage_final} presents rate-based outage probability versus BOPs saving budget for three SNR levels and three reliability thresholds ($\gamma \in \{0.99, 0.98, 0.95\}$). Online RP-MPQ (solid) consistently shifts the outage cliff to higher savings compared to static MP (dashed), demonstrating that per-sample policy adaptation reduces outage events without increasing the average UE-side encoder compute.
-This empirical gain aligns with the SSM encoder's inherent quantization robustness: the contractive state recursion limits perturbation amplification, enabling reliable operation at aggressive saving levels.
+\subsubsection{Outage Curves}
+Fig.~\ref{fig:outage_final} presents rate-based outage probability versus BOPs saving budget for three SNR levels and three reliability thresholds ($\gamma \in \{0.99, 0.98, 0.95\}$). The proposed Segment DP (solid) consistently shifts the outage cliff to higher savings compared to per-block ILP (dashed), indicating that the interaction-aware formulation provides improved distortion control at aggressive saving levels.
+This improvement is consistent with the SSM encoder's inherent quantization robustness: the contractive state recursion limits perturbation amplification, and the segment-level formulation captures the inter-block interactions that emerge when multiple blocks operate at low precision simultaneously.
+
+\subsubsection{Cross-Architecture Comparison}
+The advantage of the proposed framework is amplified when compared across architectures (Fig.~\ref{fig:cross_arch_outage}). At 93\% encoder BOPs saving, MT-AE with Segment DP achieves $-12.69$\,dB NMSE, whereas CRNet under per-block ILP collapses to $-6.79$\,dB---a gap exceeding 5.9\,dB. This gap arises from two compounding factors: (i)~the SSM encoder's contractive state dynamics provide inherent robustness to aggressive quantization, and (ii)~Segment DP captures inter-block interactions that per-block ILP misses. CNN-based encoders lack the contractive recursion and suffer disproportionate degradation when multiple FC chunks are simultaneously assigned low precision.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fig_cross_arch_outage.pdf}
+\caption{Cross-architecture outage comparison under the proposed Segment DP framework ($\mathrm{CR}=1/4$, outdoor). Three panels correspond to reliability thresholds $\gamma \in \{0.99, 0.98, 0.95\}$. MT-AE maintains low outage probability at aggressive saving levels where CNN-based encoders collapse.}
+\label{fig:cross_arch_outage}
+\end{figure*}
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.95\textwidth]{figures/fig_online_outage.pdf}
-\caption{Rate-based outage probability under varying BOPs saving relative to FP32 ($\mathrm{CR}=1/4$, outdoor). Each panel corresponds to a different downlink SNR. Solid: online RP-MPQ; dashed: static MP. Colors indicate the reliability threshold $\gamma$.}
+\caption{Rate-based outage probability under varying BOPs saving relative to FP32 ($\mathrm{CR}=1/4$, outdoor). Each panel corresponds to a different downlink SNR. Solid: Segment DP; dashed: per-block ILP. Colors indicate the reliability threshold $\gamma$.}
 \label{fig:outage_final}
 \end{figure*}
 
-\subsection{Budget Consistency Validation}
+\subsection{Budget Consistency of Joint DP}
 \label{subsec:budget_validation}
-To verify that the calibrated multiplier $\lambda$ enforces the long-term compute constraint, we report the target versus achieved average encoder budgets in Table~\ref{tab:budget_validation}.
+Table~\ref{tab:budget_validation} validates that the Joint DP outer budget allocation enforces the long-term compute constraint: the achieved average saving deviates by at most $0.022\%$ from the target, confirming that the water-filling-like allocation is practically exact.
 
 \begin{table}[t]
 \centering
-\caption{Budget consistency of the calibrated Lagrange multiplier $\lambda$ under online RP-MPQ (SNR\,=\,20\,dB, $\gamma=0.99$).}
+\caption{Budget consistency of Joint DP per-state budget allocation (SNR\,=\,20\,dB, $\gamma=0.99$).}
 \label{tab:budget_validation}
 \setlength{\tabcolsep}{6pt}
 \begin{tabular}{ccc}
@@ -639,12 +702,12 @@ $92.5\%$ & $92.49\%$ & $0.007$ \\
 
 \subsection{Validation under FR1 TDL Profiles and UE Runtime}
 \label{subsec:tdl_runtime}
-To evaluate generalization to standardized propagation conditions, we train a single MT-AE on mixed FR1 TDL-A/B/C realizations and evaluate per profile on a UE platform. Table~\ref{tab:tdl_generalization} reports NMSE under FP32, uniform INT4, and offline MPQ, together with measured encoder latency and BOPs saving. We also report per-sample UE-side runtime in Table~\ref{tab:runtime_validation}; offline LUT construction is a one-time step performed before deployment.
+To evaluate generalization to standardized propagation conditions, we train a single MT-AE on mixed FR1 TDL-A/B/C realizations and evaluate per profile on a UE platform. Table~\ref{tab:tdl_generalization} reports NMSE under FP32, uniform INT4, and offline MPQ, together with measured encoder latency and BOPs saving. We also report per-sample UE-side runtime in Table~\ref{tab:runtime_validation}; the offline lookup table construction is a one-time step performed before deployment.
 
 \begin{table}[t]
 \centering
 \caption{MT-AE performance on FR1 TDL profiles ($\mathrm{CR}=1/4$).
-Single model trained on mixed TDL-A/B/C data; evaluated per profile on a UE platform.}
+Single model trained on mixed TDL-A/B/C data; evaluated per profile on a UE platform. (To be filled.)}
 \label{tab:tdl_generalization}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lccccc}
@@ -661,12 +724,12 @@ TDL-C & \textemdash & \textemdash & \textemdash & \textemdash & \textemdash \\
 
 \begin{table}[t]
 \centering
-\caption{Per-sample UE-side latency: FP32 baseline vs.\ online RP-MPQ. Offline LUT construction is performed once before deployment.}
+\caption{Per-sample UE-side latency: FP32 baseline vs.\ Segment DP. Offline lookup table construction is performed once before deployment. (To be filled.)}
 \label{tab:runtime_validation}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lcc}
 \toprule
-Component & FP32 & Online RP-MPQ \\
+Component & FP32 & Segment DP \\
 \midrule
 Encoder inference  & \textemdash\,ms & \textemdash\,ms \\
 Policy selection   & ---             & \textemdash\,$\mu$s \\
@@ -681,9 +744,12 @@ Avg.\ BOPs saving  & $0\%$           & \textemdash\,\% \\
 \label{sec:conclusion}
 % =========================================================
 This paper studied CSI feedback for FDD massive MIMO under UE-side inference constraints.
-An asymmetric autoencoder pairing a lightweight SSM encoder at the UE with a Transformer decoder at the BS provides a quantization-robust baseline, while RP-MPQ constructs per-state optimal policies offline via a state-conditioned reliability importance surface and deploys them online via pure table lookup under a long-term UE compute budget. Experimental results demonstrated an improved accuracy--complexity trade-off and reduced rate-based outage events under identical average UE-side budgets.
+An asymmetric autoencoder pairing a lightweight SSM encoder at the UE with a Transformer decoder at the BS provides a quantization-robust baseline.
+The first methodological contribution, Segment DP, is a contiguous-segment interaction-aware dynamic program that finds optimal mixed-precision segmentations under a fixed compute budget: by perturbing contiguous groups of encoder blocks jointly, the formulation captures inter-block degradation that per-block additive analysis underestimates in aggressive compression regimes, yielding up to 0.8\,dB NMSE improvement over per-block ILP.
+The second contribution, Joint DP, extends Segment DP by optimising per-state budget allocation across channel conditions, shifting the outage cliff to higher savings at no additional NMSE cost.
+Cross-architecture evaluation confirms the compounding advantage: at 93\% encoder BOPs saving, MT-AE with Segment DP achieves $-12.69$\,dB NMSE while CRNet collapses to $-6.79$\,dB under per-block ILP, a gap exceeding 5.9\,dB attributable to both the SSM encoder's contractive robustness and the segment-level formulation's ability to capture inter-block interactions. A lightweight structural descriptor $\zeta$ discriminates encoder-friendly and encoder-hostile CSI realizations with a 3.3\,dB NMSE spread, enabling $\mathcal{O}(1)$ online policy lookup.
 
-The current framework applies post-training quantization with fixed activation precision (INT16) and uses equal proxy weights ($\lambda_d=\lambda_a=1/2$). Extensions to multi-antenna UEs, joint weight--activation optimization, data-driven optimization of proxy weights $(\lambda_d,\lambda_a)$ under $\lambda_d+\lambda_a=1$, and non-stationary channel statistics are left for future work.
+The current framework applies post-training quantization with fixed activation precision (INT16) and uses equal proxy weights ($\lambda_d=\lambda_a=1/2$). Several directions are left for future work: (i) rate-aware distortion objectives (e.g., reliability shortfall), which produced comparable results to NMSE delta in our single-user experiments but may offer additional benefits in multi-user scenarios; (ii) extensions to multi-antenna UEs, joint weight--activation optimization, data-driven proxy weight optimization, and non-stationary channel statistics.
 % --------------------
 % References
 % --------------------
