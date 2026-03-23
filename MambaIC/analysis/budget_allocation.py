@@ -15,8 +15,8 @@ import pandas as pd
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from rpmpq_v2 import get_encoder_block_names, get_encoder_layer_params, RESULTS_CSV
-from analysis.segment_dp_policy import enumerate_segments, solve_dp, segmentation_to_policy
+from rpmpq_v2 import RESULTS_CSV
+from analysis.segment_dp_baselines import enumerate_segments_joint, solve_dp
 
 os.makedirs(RESULTS_CSV, exist_ok=True)
 
@@ -32,15 +32,17 @@ def load_cached_omegas(K_bins, segments, bit_options, anchor_bits):
     v1_csv = os.path.join(RESULTS_CSV, "segment_dp_omegas.csv")
     v2_csv = os.path.join(RESULTS_CSV, "segment_dp_omegas_v2_mt-ae.csv")
 
-    if os.path.exists(v1_csv):
-        df = pd.read_csv(v1_csv)
-        has_j = "j" in df.columns
-        has_cos2 = "omega_cos2" in df.columns
-    elif os.path.exists(v2_csv):
+    # Prefer v2 (40-block joint indexing) over v1 (32-block FC-only, legacy)
+    if os.path.exists(v2_csv):
         df = pd.read_csv(v2_csv)
         has_j = False
         has_cos2 = False
-        print(f"[load_cached_omegas] Using v2 omegas: {v2_csv}")
+        print(f"[load_cached_omegas] Using v2 omegas (40-block): {v2_csv}")
+    elif os.path.exists(v1_csv):
+        df = pd.read_csv(v1_csv)
+        has_j = "j" in df.columns
+        has_cos2 = "omega_cos2" in df.columns
+        print(f"[load_cached_omegas] WARNING: Using v1 omegas (32-block FC-only): {v1_csv}")
     else:
         raise FileNotFoundError(
             f"No omega cache found. Expected:\n  {v1_csv}\n  or {v2_csv}")
@@ -191,40 +193,52 @@ def main():
     all_blocks = sorted(kdf["block"].unique())
     fc_blocks = sorted([b for b in all_blocks if "fc_part" in b],
                        key=lambda x: int(re.search(r'(\d+)$', x).group()))
-    non_fc_blocks = [b for b in all_blocks if "fc_part" not in b]
-    block_names = non_fc_blocks + fc_blocks  # match order used elsewhere
-    M = len(fc_blocks)
+    # Non-FC: only blocks with dim>=2 weights (exclude LayerNorm, BatchNorm)
+    # Match segment_dp_baselines.py get_encoder_modules() filter
+    EXCLUDE_NONFC = {"out_norm", "stem.1"}  # 1D weight layers
+    non_fc_blocks = [b for b in all_blocks if "fc_part" not in b
+                     and not any(ex in b for ex in EXCLUDE_NONFC)]
+    # Joint 40-block ordering: FC first, then non-FC
+    all_block_names = fc_blocks + non_fc_blocks
+    M_fc = len(fc_blocks)
+    M_nonfc = len(non_fc_blocks)
+    M = M_fc + M_nonfc
 
     bit_options = [16, 8, 4, 2]
     anchor_bits = 16
     K_bins = 5
     L_max = 6
 
-    segments = enumerate_segments(M, L_max)
+    segments = enumerate_segments_joint(M_fc, M_nonfc, L_max)
 
-    # Kappa from CSV (no model needed)
-    # kappa(block, bits) = params * bits * act_bits / total_fp32_bops
-    # We can derive segment kappa by summing block kappas
+    # Kappa from CSV: joint 40-block
     block_kappa = {}
     for _, row in kdf.iterrows():
         block_kappa[(row["block"], int(row["bits"]))] = row["kappa"]
 
+    # Renormalize kappa: CSV uses W*A/(W32*A16), baselines uses W*A/(W32*A32)
+    # So CSV INT16 total = 0.5, baselines INT16 total = 0.25. Scale = 0.5
+    total_int16 = sum(block_kappa.get((bn, anchor_bits), 0) for bn in all_block_names)
+    TARGET_INT16_TOTAL = 0.25  # segment_dp_baselines: params*16*16/(params*32*32)
+    if total_int16 > 0:
+        scale = TARGET_INT16_TOTAL / total_int16
+    else:
+        scale = 1.0
+    print(f"  Kappa renorm: sum(INT16)={total_int16:.4f}, scale={scale:.2f}")
+
     kappa_seg = {}
     for (l, r) in segments:
         for b in bit_options:
-            kappa_seg[(l, r, b)] = sum(
-                block_kappa.get((fc_blocks[i], b), 0) for i in range(l, r))
-
-    non_fc_cost = sum(block_kappa.get((bn, anchor_bits), 0)
-                      for bn in non_fc_blocks)
+            kappa_seg[(l, r, b)] = scale * sum(
+                block_kappa.get((all_block_names[i], b), 0) for i in range(l, r))
 
     # Load cached omegas
     print("\n[1] Loading cached segment omegas...")
     omega_nmse, omega_cos2 = load_cached_omegas(
         K_bins, segments, bit_options, anchor_bits)
 
-    # Budget range for distortion curves
-    budget_range = np.linspace(0.005, 0.20, 200).tolist()  # FC-only budget (fine grid)
+    # Budget range for distortion curves (total budget, not FC-only)
+    budget_range = np.linspace(0.005, 0.20, 200).tolist()
 
     # Compute distortion curves
     print("\n[2] Computing distortion-budget curves for each bin...")
@@ -240,23 +254,19 @@ def main():
         # Optimal allocation for each target saving
         print(f"\n  Optimal budget allocation:")
         for target_saving in np.arange(85, 97.01, 0.1).tolist():
-            target_total = (1.0 - target_saving / 100.0)
-            target_fc = target_total - non_fc_cost
-            if target_fc < 0:
-                target_fc = 0.01
+            target_budget = 1.0 - target_saving / 100.0
+            if target_budget < 0.005:
+                target_budget = 0.005
 
-            # Equal allocation baseline
             equal_D = sum(D_curves[j][np.argmin(np.abs(
-                np.array(budget_range) - target_fc))] for j in range(K_bins)) / K_bins
+                np.array(budget_range) - target_budget))] for j in range(K_bins)) / K_bins
 
-            # Optimal allocation
             opt_budgets, opt_D, avg_budget = optimize_allocation(
-                D_curves, budget_range, K_bins, target_fc)
+                D_curves, budget_range, K_bins, target_budget)
 
-            # Compute actual savings per bin
-            savings_per_bin = [(1.0 - (b + non_fc_cost)) * 100 for b in opt_budgets]
+            savings_per_bin = [(1.0 - b) * 100 for b in opt_budgets]
 
-            print(f"\n  Target: {target_saving}% (FC budget={target_fc:.4f})")
+            print(f"\n  Target: {target_saving}% (budget={target_budget:.4f})")
             print(f"    Equal:   total_D={equal_D:.6f}")
             print(f"    Optimal: total_D={opt_D:.6f}  (Δ={opt_D-equal_D:+.6f})")
             print(f"    Allocation: ", end="")
@@ -270,12 +280,12 @@ def main():
         D_curves, _ = compute_distortion_curve(
             omega, kappa_seg, segments, M, bit_options, anchor_bits, budget_range)
         for target_saving in np.arange(85, 97.01, 0.1).tolist():
-            target_fc = (1.0 - target_saving / 100.0) - non_fc_cost
-            if target_fc < 0:
-                target_fc = 0.01
+            target_budget = 1.0 - target_saving / 100.0
+            if target_budget < 0.005:
+                target_budget = 0.005
             opt_budgets, opt_D, avg_budget = optimize_allocation(
-                D_curves, budget_range, K_bins, target_fc)
-            equal_idx = np.argmin(np.abs(np.array(budget_range) - target_fc))
+                D_curves, budget_range, K_bins, target_budget)
+            equal_idx = np.argmin(np.abs(np.array(budget_range) - target_budget))
             equal_D = sum(D_curves[j][equal_idx] for j in range(K_bins)) / K_bins
             results.append({
                 "objective": obj_name,

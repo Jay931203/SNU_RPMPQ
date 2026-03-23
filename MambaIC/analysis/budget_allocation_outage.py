@@ -39,8 +39,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from rpmpq_v2 import get_encoder_block_names, get_encoder_layer_params, RESULTS_CSV
-from analysis.segment_dp_policy import (
-    enumerate_segments,
+from analysis.segment_dp_baselines import (
+    enumerate_segments_joint,
     solve_dp,
     segmentation_to_policy,
 )

@@ -36,8 +36,8 @@ from train_ae import (
 )
 from ModularModels import ModularAE
 from rpmpq_v2 import get_encoder_block_names, get_encoder_layer_params, RESULTS_CSV
-from analysis.segment_dp_policy import (
-    enumerate_segments, solve_dp, segmentation_to_policy,
+from analysis.segment_dp_baselines import (
+    enumerate_segments_joint, solve_dp, segmentation_to_policy,
 )
 from analysis.budget_allocation import load_cached_omegas
 
@@ -137,8 +137,16 @@ def main():
     block_names = get_encoder_block_names(net, fc_chunks=32)
     fc_blocks = sorted([b for b in block_names if "fc_part" in b],
                        key=lambda x: int(re.search(r'(\d+)$', x).group()))
-    non_fc_blocks = [b for b in block_names if "fc_part" not in b]
-    M = len(fc_blocks)
+    # Non-FC: only blocks with dim>=2 weights (match segment_dp_baselines)
+    EXCLUDE_NONFC = {"out_norm", "stem.1"}
+    non_fc_blocks = [b for b in block_names if "fc_part" not in b
+                     and not any(ex in b for ex in EXCLUDE_NONFC)]
+
+    # Joint 40-block ordering: FC first, then non-FC
+    all_block_names = fc_blocks + non_fc_blocks
+    M_fc = len(fc_blocks)
+    M_nonfc = len(non_fc_blocks)
+    M = M_fc + M_nonfc
 
     real_model = net.module if isinstance(net, nn.DataParallel) else net
     original_state = {k: v.clone().cpu() for k, v in real_model.state_dict().items()}
@@ -148,7 +156,7 @@ def main():
     K_bins = 5
     L_max = 6
     snr = 20
-    segments = enumerate_segments(M, L_max)
+    segments = enumerate_segments_joint(M_fc, M_nonfc, L_max)
 
     r_ref = pd.read_csv(os.path.join(RESULTS_CSV, "rpmpq_v2_perfect_rates.csv")
                          )[f"r_perf_{snr}"].values
@@ -161,17 +169,15 @@ def main():
     zeta_edges[-1] += 1e-6
     k_indices = np.clip(np.digitize(zeta_vals, zeta_edges) - 1, 0, K_bins - 1)
 
-    # Kappa
+    # Kappa: joint 40-block
     layer_params = get_encoder_layer_params(net, fc_chunks=32)
     total_fp32 = sum(layer_params.get(bn, 0) * 32 * 32 for bn in block_names)
     kappa_seg = {}
     for (l, r) in segments:
         for b in bit_options:
-            bops = sum(layer_params.get(fc_blocks[i], 0) * b * 16
+            bops = sum(layer_params.get(all_block_names[i], 0) * b * 16
                        for i in range(l, r))
             kappa_seg[(l, r, b)] = bops / total_fp32 if total_fp32 > 0 else 0
-    non_fc_cost = sum((layer_params.get(bn, 0) * anchor_bits * 16) / total_fp32
-                      for bn in non_fc_blocks)
 
     # Load omegas and budget allocation
     omega_nmse, omega_cos2 = load_cached_omegas(
@@ -248,9 +254,10 @@ def main():
         print(f"  Target Saving = {target_saving}%")
         print(f"{'='*60}")
 
-        target_fc = (1.0 - target_saving / 100.0) - non_fc_cost
-        if target_fc < 0:
-            target_fc = 0.01
+        # Total budget (joint FC + non-FC)
+        target_budget = 1.0 - target_saving / 100.0
+        if target_budget < 0.005:
+            target_budget = 0.005
 
         # --- Method 4: HAWQ + ILP baseline (objective-agnostic) ---
         if hawq_df is not None:
@@ -298,9 +305,8 @@ def main():
             # --- Method 1: Static (single policy, median bin omega) ---
             mid_bin = K_bins // 2
             _, seg_static = solve_dp(M, segments, omega[mid_bin], kappa_seg,
-                                      target_fc, bit_options, anchor_bits)
-            pol_static = segmentation_to_policy(seg_static, fc_blocks,
-                                                 non_fc_blocks, anchor_bits)
+                                      target_budget, bit_options, anchor_bits)
+            pol_static = segmentation_to_policy(seg_static, all_block_names)
 
             real_model.load_state_dict(original_state)
             apply_precision_policy(net, pol_static, device)
@@ -319,9 +325,8 @@ def main():
             policies_equal = {}
             for j in range(K_bins):
                 _, seg_j = solve_dp(M, segments, omega[j], kappa_seg,
-                                     target_fc, bit_options, anchor_bits)
-                policies_equal[j] = segmentation_to_policy(
-                    seg_j, fc_blocks, non_fc_blocks, anchor_bits)
+                                     target_budget, bit_options, anchor_bits)
+                policies_equal[j] = segmentation_to_policy(seg_j, all_block_names)
 
             res_equal = eval_adaptive(net, test_set, norm_params, device,
                                        policies_equal, k_indices, K_bins, r_ref, snr)
@@ -333,16 +338,15 @@ def main():
                 if len(row) > 0:
                     opt_budgets = [row[f"B_{j}"].values[0] for j in range(K_bins)]
                 else:
-                    opt_budgets = [target_fc] * K_bins
+                    opt_budgets = [target_budget] * K_bins
             else:
-                opt_budgets = [target_fc] * K_bins
+                opt_budgets = [target_budget] * K_bins
 
             policies_opt = {}
             for j in range(K_bins):
                 _, seg_j = solve_dp(M, segments, omega[j], kappa_seg,
                                      opt_budgets[j], bit_options, anchor_bits)
-                policies_opt[j] = segmentation_to_policy(
-                    seg_j, fc_blocks, non_fc_blocks, anchor_bits)
+                policies_opt[j] = segmentation_to_policy(seg_j, all_block_names)
 
             res_opt = eval_adaptive(net, test_set, norm_params, device,
                                      policies_opt, k_indices, K_bins, r_ref, snr)
@@ -388,7 +392,7 @@ def main():
                 policies_ra = {}
                 for j in range(K_bins):
                     _, seg_j = solve_dp(M, segments, omega_ra[j], kappa_seg,
-                                         target_fc, bit_options, anchor_bits)
+                                         target_budget, bit_options, anchor_bits)
                     policies_ra[j] = segmentation_to_policy(
                         seg_j, fc_blocks, non_fc_blocks, anchor_bits)
 
