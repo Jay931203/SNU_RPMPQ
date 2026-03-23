@@ -393,8 +393,7 @@ def main():
                 for j in range(K_bins):
                     _, seg_j = solve_dp(M, segments, omega_ra[j], kappa_seg,
                                          target_budget, bit_options, anchor_bits)
-                    policies_ra[j] = segmentation_to_policy(
-                        seg_j, fc_blocks, non_fc_blocks, anchor_bits)
+                    policies_ra[j] = segmentation_to_policy(seg_j, all_block_names)
 
                 res_ra = eval_adaptive(net, test_set, norm_params, device,
                                         policies_ra, k_indices, K_bins, r_ref, snr)

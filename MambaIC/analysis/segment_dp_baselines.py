@@ -126,18 +126,31 @@ def solve_dp(M, segments, omega, kappa, budget, bit_options, anchor_bits,
     return best_val, seg
 
 
-def segmentation_to_policy(segmentation, block_names):
+def segmentation_to_policy(segmentation, block_names_or_fc, non_fc_blocks=None, anchor_bits=16):
     """Convert segmentation [(l, r, b), ...] to {block_name: bits} policy.
 
-    Works with both FC-only (32 blocks) and joint (40 blocks) indexing.
-    block_names[i] maps index i to the actual block name.
+    Two calling conventions:
+      - New (v2): segmentation_to_policy(seg, all_block_names)
+      - Legacy:   segmentation_to_policy(seg, fc_blocks, non_fc_blocks, anchor_bits)
     """
-    policy = {}
-    for (l, r, b) in segmentation:
-        for i in range(l, r):
-            if i < len(block_names):
-                policy[block_names[i]] = b
-    return policy
+    if non_fc_blocks is not None:
+        # Legacy call: fc_blocks + non_fc_blocks
+        fc_blocks = block_names_or_fc
+        policy = {bn: anchor_bits for bn in non_fc_blocks}
+        for (l, r, b) in segmentation:
+            for i in range(l, r):
+                if i < len(fc_blocks):
+                    policy[fc_blocks[i]] = b
+        return policy
+    else:
+        # New v2 call: all_block_names
+        block_names = block_names_or_fc
+        policy = {}
+        for (l, r, b) in segmentation:
+            for i in range(l, r):
+                if i < len(block_names):
+                    policy[block_names[i]] = b
+        return policy
 
 
 # Legacy-compatible wrapper: enumerate_segments = FC-only version
