@@ -308,6 +308,8 @@ def build_outage_curves(
 
     print(f"  Total (bin x saving) combinations: {total_combos}")
 
+    done_keys = set()
+    remaining = total_combos
     pbar = tqdm(total=remaining, desc="Outage curves")
 
     for j in range(K_BINS):
