@@ -27,3 +27,9 @@ NVIDIA Corporation/
 # ===== OS =====
 Thumbs.db
 .DS_Store
+# Large legacy CSVs (>100MB)
+MambaIC/results/csv/_legacy/cliff_perturbation_anchor4.csv
+MambaIC/results/csv/_legacy/cliff_perturbation_anchor8.csv
+MambaIC/results/csv/_legacy/rpmpq_v2_perturbation.csv
+MambaIC/results/csv/_legacy/rpmpq_v2_perturbation_step2.csv
+MambaIC/results/csv/_legacy/fitting_raw_data_mamba.csv

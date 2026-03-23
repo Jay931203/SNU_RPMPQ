@@ -1,0 +1,5 @@
+scheme,avg_saving_pct,std_saving_pct,nmse_db
+uniform_int16,50.0,0.00,-16.48
+uniform_int8,75.0,0.00,-16.25
+uniform_int4,87.5,0.00,-1.72
+fp32,0.0,0.00,-16.51
