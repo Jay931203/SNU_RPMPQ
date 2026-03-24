@@ -794,6 +794,62 @@ def run_step2_optimize(df_curves: Optional[pd.DataFrame] = None):
     return df_out
 
 
+def _generate_complete_eval():
+    """Generate complete_eval_mtae.csv from multi-SNR outage + budget allocation.
+
+    Combines:
+      - outage_multi_snr_sweep.csv: segment-dp outage at SNR=10/20/30 (equal alloc)
+      - budget_allocation_outage.csv: optimal per-bin allocation outage
+    Output: complete_eval_mtae.csv with columns:
+      model, snr, target_saving, gamma, nmse_db, outage_equal, outage_alloc, improvement
+    """
+    sweep_csv = os.path.join(RESULTS_CSV, "outage_multi_snr_sweep.csv")
+    alloc_csv = os.path.join(RESULTS_CSV, "budget_allocation_outage.csv")
+    out_csv = os.path.join(RESULTS_CSV, "complete_eval_mtae.csv")
+
+    if not os.path.exists(sweep_csv) or not os.path.exists(alloc_csv):
+        print("[Step 3] SKIP: outage_multi_snr_sweep.csv or budget_allocation_outage.csv not found.")
+        return
+
+    sweep = pd.read_csv(sweep_csv)
+    alloc = pd.read_csv(alloc_csv)
+
+    # Map gamma to outage column names in sweep
+    gamma_col_map = {0.99: "outage_99", 0.98: "outage_98", 0.95: "outage_95"}
+
+    rows = []
+    for snr in sorted(sweep["snr"].unique()):
+        sdp = sweep[(sweep["method"] == "segment-dp") & (sweep["snr"] == snr)].sort_values("saving")
+
+        for gamma in GAMMAS:
+            ocol = gamma_col_map.get(gamma)
+            if ocol is None or ocol not in sdp.columns:
+                continue
+
+            alloc_g = alloc[alloc["gamma"] == gamma].sort_values("target_saving")
+
+            for _, row_a in alloc_g.iterrows():
+                ts = row_a["target_saving"]
+                # Find closest sweep point
+                idx = (sdp["saving"] - ts).abs().idxmin()
+                row_s = sdp.loc[idx]
+
+                rows.append({
+                    "model": "MT-AE",
+                    "snr": snr,
+                    "target_saving": ts,
+                    "gamma": gamma,
+                    "nmse_db": row_s["nmse_db"],
+                    "outage_equal": row_a["equal_outage"],
+                    "outage_alloc": row_a["optimal_outage"],
+                    "improvement": row_a["improvement"],
+                })
+
+    df = pd.DataFrame(rows)
+    df.to_csv(out_csv, index=False)
+    print(f"\n[Step 3] Saved complete_eval_mtae.csv: {len(df)} rows")
+
+
 # ===================================================================
 # Entry point
 # ===================================================================
@@ -826,6 +882,11 @@ def main():
         # Full pipeline
         df_curves = run_step1_curves(objective=args.objective)
         run_step2_optimize(df_curves)
+
+    # Step 3: Generate complete_eval_mtae.csv by combining
+    # outage_multi_snr_sweep.csv (equal alloc per SNR) +
+    # budget_allocation_outage.csv (joint DP optimized alloc)
+    _generate_complete_eval()
 
     elapsed = time.time() - t0
     print(f"\nTotal elapsed: {elapsed:.1f}s")
