@@ -28,9 +28,11 @@ RESULTS_CSV = os.path.join(PROJECT_ROOT, "results", "csv")
 FIGURES_DIR = os.path.join(PROJECT_ROOT, "results", "plots")
 PAPER_FIG_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), "figures")
 PAPER_FINAL_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), "figures", "_paper")
+PAPERS_FIG_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), "papers", "figures")
 os.makedirs(FIGURES_DIR, exist_ok=True)
 os.makedirs(PAPER_FIG_DIR, exist_ok=True)
 os.makedirs(PAPER_FINAL_DIR, exist_ok=True)
+os.makedirs(PAPERS_FIG_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Style -- clean publication style: no main titles, only (a)/(b) panel labels,
@@ -63,8 +65,8 @@ BUG_SAVING_THRESHOLD = 96.5
 
 
 def _save(fig, name):
-    """Save figure as both PDF and PNG to results/plots/, figures/, and figures/_paper/."""
-    for d in (FIGURES_DIR, PAPER_FIG_DIR, PAPER_FINAL_DIR):
+    """Save figure to all output directories."""
+    for d in (FIGURES_DIR, PAPER_FIG_DIR, PAPER_FINAL_DIR, PAPERS_FIG_DIR):
         for ext in ("pdf", "png"):
             fig.savefig(os.path.join(d, f"{name}.{ext}"), dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -313,7 +315,7 @@ def fig1b_hawq_vs_segment_dp(df):
 
         ax.plot(hawq["saving"], hawq_smooth,
                 "--", color=C_RED, linewidth=2.0,
-                marker="v", markersize=6, markevery=5,
+                marker="v", markersize=8, markevery=8,
                 label="HAWQ-ILP", zorder=4)
 
         # Segment DP from segment_dp_baselines.csv
@@ -330,7 +332,7 @@ def fig1b_hawq_vs_segment_dp(df):
                 mtae_dp["target_saving"].values, mtae_dp["nmse_db"].values)
             ax.plot(mtae_dp["target_saving"], dp_smooth,
                     "-", color=C_BLUE, linewidth=2.0,
-                    marker="o", markersize=6, markevery=5,
+                    marker="o", markersize=8, markevery=8,
                     label="Segment DP (proposed)", zorder=4)
         else:
             static = _filter_bug(df, "nmse-static")
@@ -338,7 +340,7 @@ def fig1b_hawq_vs_segment_dp(df):
                                              static["nmse_db"].values)
             ax.plot(static["saving"], static_smooth,
                     "-", color=C_BLUE, linewidth=2.0,
-                    marker="o", markersize=6, markevery=5,
+                    marker="o", markersize=8, markevery=8,
                     label="Segment DP (proposed)", zorder=4)
 
         ax.set_ylabel("NMSE (dB)", fontsize=13)
