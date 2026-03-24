@@ -27,8 +27,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_CSV = os.path.join(PROJECT_ROOT, "results", "csv")
 FIGURES_DIR = os.path.join(PROJECT_ROOT, "results", "plots")
 PAPER_FIG_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), "figures")
+PAPER_FINAL_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), "figures", "_paper")
 os.makedirs(FIGURES_DIR, exist_ok=True)
 os.makedirs(PAPER_FIG_DIR, exist_ok=True)
+os.makedirs(PAPER_FINAL_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Style -- clean publication style: no main titles, only (a)/(b) panel labels,
@@ -61,13 +63,10 @@ BUG_SAVING_THRESHOLD = 96.5
 
 
 def _save(fig, name):
-    """Save figure as both PDF and PNG to results/plots/ and figures/."""
-    for ext in ("pdf", "png"):
-        path = os.path.join(FIGURES_DIR, f"{name}.{ext}")
-        fig.savefig(path, dpi=300, bbox_inches="tight")
-    for ext in ("pdf", "png"):
-        path = os.path.join(PAPER_FIG_DIR, f"{name}.{ext}")
-        fig.savefig(path, dpi=300, bbox_inches="tight")
+    """Save figure as both PDF and PNG to results/plots/, figures/, and figures/_paper/."""
+    for d in (FIGURES_DIR, PAPER_FIG_DIR, PAPER_FINAL_DIR):
+        for ext in ("pdf", "png"):
+            fig.savefig(os.path.join(d, f"{name}.{ext}"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
