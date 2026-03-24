@@ -245,7 +245,7 @@ def fig1_uniform_rpmpq(df, eval_df, baseline_df):
         ax_a.set_title("(a) Uniform Quantization", fontsize=13)
         ax_a.set_xlim(70, 100)
         ax_a.set_xticks(savings_uniform)
-        ax_a.legend(loc="upper left", fontsize=10, ncol=2, framealpha=0.9)
+        ax_a.legend(loc="upper left", fontsize=9, ncol=1, framealpha=0.9)
         _grid(ax_a)
 
         # -- Panel (b): Offline RP-MPQ -- all 4 models dense curves --
@@ -294,9 +294,7 @@ def fig1_uniform_rpmpq(df, eval_df, baseline_df):
         ax_b.set_ylabel("NMSE (dB)", fontsize=13)
         ax_b.set_title("(b) Segment-Level DP", fontsize=13)
         _axis_saving(ax_b, xlim=(84, 98))
-        # Legend at center-right to avoid CsiNet saturated region
-        ax_b.legend(loc="center left", fontsize=9, framealpha=0.95,
-                    edgecolor="#cccccc", bbox_to_anchor=(0.0, 0.35))
+        ax_b.legend(loc="upper left", fontsize=9, ncol=1, framealpha=0.9)
         _grid(ax_b)
 
         fig.tight_layout(w_pad=3.0)
@@ -316,6 +314,7 @@ def fig1b_hawq_vs_segment_dp(df):
 
         ax.plot(hawq["saving"], hawq_smooth,
                 "--", color=C_RED, linewidth=2.0,
+                marker="v", markersize=6, markevery=5,
                 label="HAWQ-ILP", zorder=4)
 
         # Segment DP from segment_dp_baselines.csv
@@ -332,6 +331,7 @@ def fig1b_hawq_vs_segment_dp(df):
                 mtae_dp["target_saving"].values, mtae_dp["nmse_db"].values)
             ax.plot(mtae_dp["target_saving"], dp_smooth,
                     "-", color=C_BLUE, linewidth=2.0,
+                    marker="o", markersize=6, markevery=5,
                     label="Segment DP (proposed)", zorder=4)
         else:
             static = _filter_bug(df, "nmse-static")
@@ -339,6 +339,7 @@ def fig1b_hawq_vs_segment_dp(df):
                                              static["nmse_db"].values)
             ax.plot(static["saving"], static_smooth,
                     "-", color=C_BLUE, linewidth=2.0,
+                    marker="o", markersize=6, markevery=5,
                     label="Segment DP (proposed)", zorder=4)
 
         ax.set_ylabel("NMSE (dB)", fontsize=13)
